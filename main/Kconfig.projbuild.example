@@ -1,0 +1,50 @@
+menu "Project Network Configuration"
+
+    menu "Wi-Fi Settings"
+        config WIFI_SSID
+            string "Wi-Fi SSID"
+            default "My_Home_WiFi"
+            help
+                The SSID (name) of your Wi-Fi access point.
+        config WIFI_PASSWORD
+            string "Wi-Fi Password"
+            default "super_secret_password"
+            help
+                The password for your Wi-Fi network. Leave blank if open.
+    endmenu
+
+    menu "Ethernet & Proxy Settings"
+        config ETHERNET_IP
+            string "Ethernet Static IP Address"
+            default "192.168.178.129"
+            help
+                Static IP address assigned to the Ethernet interface.
+
+        config ETHERNET_SUBNET
+            string "Ethernet Subnet Mask"
+            default "255.255.255.0"
+            help
+                Subnet mask for the Ethernet network (e.g., 255.255.255.0).
+
+        config SERVER_LISTEN_PORT
+            int "Server Listen Port"
+            default 8080
+            range 1 65535
+            help
+                The local port number the ESP32 server will listen on for incoming connections.
+
+        config PROXY_TARGET_ADDRESS
+            string "Proxy Target Address"
+            default "10.0.0.1"
+            help
+                The IP address or domain name of the remote proxy target server.
+
+        config PROXY_TARGET_PORT
+            int "Proxy Target Port"
+            default 8081
+            range 1 65535
+            help
+                The port number of the remote proxy target server.
+    endmenu
+
+endmenu
