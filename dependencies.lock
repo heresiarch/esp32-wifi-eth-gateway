@@ -138,6 +138,6 @@ dependencies:
 direct_dependencies:
 - espressif/ethernet_init
 - espressif/led_strip
-manifest_hash: d3bb45c38a2dbdaa40dbe1571998987d0f9fb4f898571e858b5a46c3d3aa2377
+manifest_hash: d9c06c916d9e9e55074e0d7abe077b8f8452d182cee900d2b596ab066233befb
 target: esp32c6
 version: 3.0.0
