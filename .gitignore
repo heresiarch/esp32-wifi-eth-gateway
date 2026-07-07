@@ -8,6 +8,7 @@
 # =============================================================================
 build/
 sdkconfig.old
+sdkconfig
 
 # Managed components (downloaded automatically)
 managed_components/
