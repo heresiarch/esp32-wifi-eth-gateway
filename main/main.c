@@ -20,6 +20,7 @@
 #include "ethernet_init.h"
 #include "sdkconfig.h"
 #include "proxy.h"
+#include "led.h"
 
 
 static const char *TAG = "NET";
@@ -51,6 +52,7 @@ static void eth_event_handler(void *arg,
                               int32_t event_id,
                               void *event_data)
 {
+    
     switch (event_id) {
 
     case ETHERNET_EVENT_START:
@@ -219,9 +221,19 @@ void app_main(void)
 
     ESP_LOGI(TAG, "WiFi + Ethernet started.");
     
-    proxy_start(8888, "192.168.178.5", 8888);
+    // TODO: Make these configurable via menuconfig
+    proxy_start(CONFIG_SERVER_LISTEN_PORT, CONFIG_PROXY_TARGET_ADDRESS, CONFIG_PROXY_TARGET_PORT);
 
+
+    // Initialize non-blocking 30 ms timer on GPIO 21
+    ESP_ERROR_CHECK(led_init(CONFIG_RGB_LED_GPIO, 100));
+    
     while (1) {
+        
+        //ESP_LOGI("main", "Setting blink color to Orange...");
+        led_set_max_brightness(15);
+        led_set_blink_color(0, 255, 0); // Orange
+        led_set_max_brightness(15);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

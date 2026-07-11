@@ -78,6 +78,41 @@ ESP32 GPIO15 (INT)   ------>  W5500 INT
 ESP32 GPIO14 (RST)   ------>  W5500 RESET
 ```
 
+**Architecture**
+
+- **Overview:** The ESP32 runs a small application that bridges packets between the Wi‑Fi stack (`esp_wifi` / `lwIP`) and a SPI Ethernet controller (W5500). The user-space TCP proxy (`proxy.c`) accepts connections on the ESP32 and forwards bytes between the two interfaces.
+
+- **Responsibilities:**
+	- `main.c` — initialises Wi‑Fi, Ethernet and starts the proxy.
+	- `proxy.c` — accepts TCP connections and forwards traffic between endpoints.
+	- `status_led.c` — indicates network error and traffic activity (Ethernet/Wi‑Fi).
+
+ASCII architecture diagram:
+
+```
+										+----------------------+
+										|    Wi‑Fi Network     |
+										+----------+-----------+
+															 |
+												 (802.11 / IP)
+															 |
+										+----------v-----------+
+										|      ESP32‑C6        |
+										|  - esp_wifi (STA)    |
+										|  - esp_eth (W5500)   |
+										|  - proxy.c (TCP fwd) |
+										|  - status_led (LED)  |
+										+----+-----------+------+
+												 |           |
+							SPI (MOSI/SCLK/CS)     |  Local IP sockets
+												 |           |
+										+----v----+      |
+										|  W5500   |      |
+										| Ethernet |<-----+
+										|  PHY     |  (Ethernet network / device)
+										+---------+
+```
+
 Note: If you change these pins via `menuconfig`, update `sdkconfig` and re-flash the firmware so the driver uses the new assignments.
 
 ## Ignoring files from tooling

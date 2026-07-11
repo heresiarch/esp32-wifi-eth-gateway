@@ -1,0 +1,7 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "Waveshare-ESP32")(type "KiCad")(uri "${KIPRJMOD}/Waveshare-ESP32.pretty")(options "")(descr ""))
+  (lib (name "usb-c-adapter")(type "KiCad")(uri "${KIPRJMOD}/usb-c-adapter.pretty")(options "")(descr ""))
+  (lib (name "w5500-eth-breakout")(type "KiCad")(uri "${KIPRJMOD}/w5500-eth-breakout.pretty")(options "")(descr ""))
+  (lib (name "ZZZ")(type "KiCad")(uri "/home/rene/Downloads/ESP32C6_MVP/ESP32-C6.pretty")(options "")(descr ""))
+)

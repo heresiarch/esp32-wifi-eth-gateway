@@ -1,0 +1,42 @@
+# ====================================================================
+# KiCad 9 Recommended Gitignore
+# ====================================================================
+
+# --- Temporary & Backup Files ---
+*.000
+*.bak
+*.bck
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*.sch-bak
+*~
+~*.lck
+_autosave-*
+\#*#
+*.tmp
+
+# --- KiCad 9 Project Backups Directory ---
+# KiCad 9 creates a local directory to auto-save zip backups of your work
+*-backups/
+
+# --- Local User Preferences & Caches ---
+# Contains your personal workspace settings, window positions, etc.
+# Highly recommended to ignore so it doesn't cause constant Git conflicts.
+*.kicad_prl
+fp-info-cache
+
+# --- Netlist & Autorouter Files (Rarely needed in version control) ---
+*.net
+*.dsn
+*.ses
+
+# --- Design Rule Check (DRC) Reports ---
+*.rpt
+
+# --- Manufacturing & Output Directories (Optional but Recommended) ---
+# If you prefer to save your Gerbers and BOMs in specific folders, 
+# uncomment these lines to keep your repository clean.
+# Gerber/
+# GBR/
+# Output/
+# _saved_boms/

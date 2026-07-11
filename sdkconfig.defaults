@@ -1068,42 +1068,6 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
-# Project Network Configuration
-#
-
-#
-# Wi-Fi Settings
-#
-# default:
-CONFIG_WIFI_SSID="xxx"
-# default:
-CONFIG_WIFI_PASSWORD="12345678"
-# end of Wi-Fi Settings
-
-#
-# Status LED
-#
-# default:
-CONFIG_RGB_LED_GPIO=8
-# end of Status LED
-
-#
-# Ethernet & Proxy Settings
-#
-# default:
-CONFIG_ETHERNET_IP="192.168.178.129"
-# default:
-CONFIG_ETHERNET_SUBNET="255.255.255.0"
-# default:
-CONFIG_SERVER_LISTEN_PORT=8080
-# default:
-CONFIG_PROXY_TARGET_ADDRESS="10.0.0.1"
-# default:
-CONFIG_PROXY_TARGET_PORT=8081
-# end of Ethernet & Proxy Settings
-# end of Project Network Configuration
-
-#
 # Ethernet Configuration
 #
 # default:

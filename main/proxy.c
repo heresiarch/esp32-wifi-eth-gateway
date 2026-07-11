@@ -11,6 +11,8 @@
 #include "lwip/netdb.h"
 #include "lwip/inet.h"
 
+#include "led.h"
+
 static const char *TAG = "PROXY";
 
 #define PROXY_STACK_SIZE 4096
@@ -80,6 +82,8 @@ static void proxy_task(void *arg)
             continue;
 
         ESP_LOGI(TAG, "Client connected");
+        led_set_max_brightness(100);
+        led_set_blink_color(0, 255, 255); // Cyan
 
         struct sockaddr_in remote_addr = {};
         remote_addr.sin_family = AF_INET;
@@ -174,6 +178,8 @@ static void proxy_task(void *arg)
         }
 
         ESP_LOGI(TAG, "Connection closed");
+        led_set_max_brightness(100);
+        led_set_blink_color(255, 0, 0); // Red
 
         shutdown(client, SHUT_RDWR);
         shutdown(server, SHUT_RDWR);
