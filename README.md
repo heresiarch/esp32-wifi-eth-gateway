@@ -19,6 +19,7 @@ This project implements a network gateway that forwards traffic between the ESP3
 - `partition_table/`, `sdkconfig*` — project configuration
 - `managed_components/` — included external components (W5500, ethernet init, etc.)
 - `build/` — build output (ignored by source control)
+- `circuit-design` KiCad 9 project
 
 ## Requirements
 - ESP-IDF (supported version: refer to the `esp-idf/` subfolder or `CMakeLists.txt`)
@@ -58,7 +59,7 @@ Replace `/dev/ttyUSB0` with your serial device.
 - Hardware pin mappings for the SPI Ethernet module are configured in `menuconfig` or in the ethernet component source — check `managed_components/espressif__w5500/` for driver-specific settings.
 
 ## Wiring (ESP32 → W5500)
-Below are the SPI pin assignments used in this project (taken from `sdkconfig`).
+Below are the SPI pin assignments used in this project.
 
 - SCLK: GPIO4  (`CONFIG_ETHERNET_SPI_SCLK_GPIO=4`)
 - MOSI: GPIO5  (`CONFIG_ETHERNET_SPI_MOSI_GPIO=5`)
@@ -85,7 +86,7 @@ ESP32 GPIO14 (RST)   ------>  W5500 RESET
 - **Responsibilities:**
 	- `main.c` — initialises Wi‑Fi, Ethernet and starts the proxy.
 	- `proxy.c` — accepts TCP connections and forwards traffic between endpoints.
-	- `status_led.c` — indicates network error and traffic activity (Ethernet/Wi‑Fi).
+	- `status_led.c` — indicates general on status and traffic activity (Ethernet/Wi‑Fi).
 
 ASCII architecture diagram:
 
@@ -115,12 +116,15 @@ ASCII architecture diagram:
 
 Note: If you change these pins via `menuconfig`, update `sdkconfig` and re-flash the firmware so the driver uses the new assignments.
 
-## Ignoring files from tooling
-- This repository contains a `.copilotignore` file which lists build artifacts and local config folders to exclude from Copilot/CLI scans (for example: `build`, `.vscode`).
+
+## Circuit Design
+I create a KiCad 9 project with some custom footprints for the following components I used `circuit-design`:
+* Waveshare ESP32-C6-Zero with headers
+* TPS2553 USB eFuse on DIP-6 Adapter (Powerlimit 400mA)
+* Wiznet 5500 module with headers
+* generic USB-C Header which included already termination resistors
+
+![alt text](circuit-design/circuit.png)
 
 ## License & contributors
 See the `LICENSE` file for license details. Contributions and issues are welcome.
-
----
-If you want, I can also add a short section describing how the bridge is implemented (which lwIP/esp-netif interfaces are used) or add step-by-step Wi‑Fi credential examples — tell me which you prefer.
-
