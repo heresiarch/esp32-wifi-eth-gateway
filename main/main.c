@@ -146,6 +146,12 @@ static void wifi_init(void)
             NULL));
 
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Enable Wi-Fi power saving
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
+
+    // Reduce TX power to 11 dBm (adjust if needed)
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(44));
 }
 
 /*---------------------------------------------------------------
