@@ -1,5 +1,4 @@
-#ifndef LED_H
-#define LED_H
+#pragma once
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,5 +22,3 @@ void led_set_max_brightness(uint8_t max_brightness_percent);
 #ifdef __cplusplus
 }
 #endif
-
-#endif // LED_H
