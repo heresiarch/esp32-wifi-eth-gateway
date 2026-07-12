@@ -7,11 +7,8 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "sdkconfig.h"
-
-
 #include "wifi.h"
-#include "proxy.h"
-#include "led.h"
+
 
 
 static const char *TAG = "WIFI";
