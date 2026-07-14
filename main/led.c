@@ -4,7 +4,7 @@
 #include "esp_log.h"
 #include "led_strip.h"
 
-static const char *TAG = "led_module";
+static const char *TAG = "LED";
 
 static led_strip_handle_t led_strip = NULL;
 static TaskHandle_t led_task_handle = NULL;
