@@ -8,23 +8,23 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "sdkconfig.h"
+#include "esp_rom_sys.h" // Für präzise ROM-Verzögerungen im Timer-Kontext
 
 static const char *TAG = "ETH";
 
-// Define your W5500 physical reset pin (change this to your actual GPIO schematic mapping)
 #define W5500_RESET_GPIO   CONFIG_ETHERNET_SPI_PHY_RST0_GPIO
 #define ETH_TIMEOUT_MS     30000
 
 static TimerHandle_t eth_timeout_timer = NULL;
 
 /*---------------------------------------------------------------
- * Hardware Reset Logic
+ * Hardware Reset Logic (Optimized for Timer Context)
  *-------------------------------------------------------------*/
 static void hw_reset_w5500_and_restart(void)
 {
-    ESP_LOGE(TAG, "Ethernet error or timeout detected! Hardware resetting W5500 and ESP32-C6...");
+    ESP_LOGE(TAG, "Ethernet error/timeout! Resetting W5500 and restarting ESP32-C6...");
 
-    // Configure the reset GPIO
+    // 1. Reset-Pin als Output konfigurieren
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT,
@@ -34,13 +34,18 @@ static void hw_reset_w5500_and_restart(void)
     };
     gpio_config(&io_conf);
 
-    // Pull W5500 RESET low to physically reset the chip
+    // 2. Hardware-Reset-Sequenz für W5500 ausführen
+    // (Wir nutzen hier esp_rom_delay_us, um den FreeRTOS-Timer-Task nicht zu blockieren)
+    ESP_LOGI(TAG, "Pulling W5500 Reset LOW...");
     gpio_set_level(W5500_RESET_GPIO, 0);
-    vTaskDelay(pdMS_TO_TICKS(100)); // Hold reset low for 100ms
-    gpio_set_level(W5500_RESET_GPIO, 1);
-    vTaskDelay(pdMS_TO_TICKS(50));  // Allow some time for the W5500 PLL to stabilize
+    esp_rom_delay_us(100000); // 100ms im LOW-Zustand halten
 
-    // Restart the ESP32-C6
+    ESP_LOGI(TAG, "Setting W5500 Reset HIGH...");
+    gpio_set_level(W5500_RESET_GPIO, 1);
+    esp_rom_delay_us(50000);  // 50ms warten, bis PLL und Quarz des W5500 stabil schwingen
+
+    // 3. Erst jetzt, da der W5500 wieder "wach" und stabil ist, starten wir den ESP32-C6 neu
+    ESP_LOGI(TAG, "Restarting System...");
     esp_restart();
 }
 
@@ -67,7 +72,7 @@ static void eth_got_ip_handler(void *arg,
     ESP_LOGI(TAG, "Mask    : " IPSTR, IP2STR(&event->ip_info.netmask));
     ESP_LOGI(TAG, "Gateway : " IPSTR, IP2STR(&event->ip_info.gw));
 
-    // Got IP! Stop the watchdog countdown timer.
+    // Erfolgreich verbunden: Watchdog stoppen
     if (eth_timeout_timer != NULL) {
         if (xTimerStop(eth_timeout_timer, 0) == pdPASS) {
             ESP_LOGI(TAG, "Ethernet timeout timer stopped successfully.");
@@ -100,6 +105,7 @@ static void eth_event_handler(void *arg,
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Ethernet Link Down");
         if (eth_timeout_timer != NULL) {
+            // Startet den Timer neu (resettet die 30 Sekunden)
             xTimerStart(eth_timeout_timer, 0);
             ESP_LOGW(TAG, "Link lost. 30s connection watchdog timer restarted.");
         }
@@ -114,7 +120,6 @@ static void eth_event_handler(void *arg,
     }
 }
 
-
 /*---------------------------------------------------------------
  * Ethernet Initialization
  *-------------------------------------------------------------*/
@@ -124,7 +129,7 @@ void ethernet_init(void)
     esp_eth_handle_t *eth_handles = NULL;
     esp_err_t ret;
 
-    // 1. Create the watchdog timer (one-shot, auto-reload set to pdFALSE)
+    // 1. Erstelle den Watchdog-Timer
     eth_timeout_timer = xTimerCreate("eth_watchdog",
                                      pdMS_TO_TICKS(ETH_TIMEOUT_MS),
                                      pdFALSE,
@@ -137,7 +142,7 @@ void ethernet_init(void)
         return;
     }
 
-    // 2. Safely check Ethernet peripheral hardware initialization
+    // 2. Hardware initialisieren
     ret = ethernet_init_all(&eth_handles, &eth_port_cnt);
     if (ret != ESP_OK || eth_port_cnt == 0) {
         ESP_LOGE(TAG, "W5500 Hardware Init Failed! code: %s", esp_err_to_name(ret));
@@ -145,7 +150,7 @@ void ethernet_init(void)
         return;
     }
 
-    // 3. Register Event Handlers with safety checks
+    // 3. Event-Handler registrieren
     ret = esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, eth_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register ETH events: %s", esp_err_to_name(ret));
@@ -160,7 +165,7 @@ void ethernet_init(void)
         return;
     }
 
-    // 4. Attach Netif interfaces and start drivers safely
+    // 4. Netif konfigurieren und starten
     for (int i = 0; i < eth_port_cnt; i++) {
 
         esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
