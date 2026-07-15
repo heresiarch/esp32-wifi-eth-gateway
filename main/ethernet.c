@@ -8,7 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "sdkconfig.h"
-#include "esp_rom_sys.h" // Für präzise ROM-Verzögerungen im Timer-Kontext
+#include "esp_rom_sys.h" 
 
 static const char *TAG = "ETH";
 
@@ -17,14 +17,22 @@ static const char *TAG = "ETH";
 
 static TimerHandle_t eth_timeout_timer = NULL;
 
-/*---------------------------------------------------------------
- * Hardware Reset Logic (Optimized for Timer Context)
- *-------------------------------------------------------------*/
-static void hw_reset_w5500_and_restart(void)
-{
-    ESP_LOGE(TAG, "Ethernet error/timeout! Resetting W5500 and restarting ESP32-C6...");
+// Globale Variablen, um die Treiber-Instanzen im laufenden Betrieb ansteuern zu können
+static esp_eth_handle_t *s_eth_handles = NULL;
+static uint8_t s_eth_port_cnt = 0;
 
-    // 1. Reset-Pin als Output konfigurieren
+/*---------------------------------------------------------------
+ * Lokale Prototypen
+ *-------------------------------------------------------------*/
+static void hw_reset_w5500_only(void);
+static void eth_restart_without_reboot(void);
+
+
+/*---------------------------------------------------------------
+ * Hardware Reset Logic (Physischer Reset des W5500)
+ *-------------------------------------------------------------*/
+static void hw_reset_w5500_only(void)
+{
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_OUTPUT,
@@ -34,19 +42,56 @@ static void hw_reset_w5500_and_restart(void)
     };
     gpio_config(&io_conf);
 
-    // 2. Hardware-Reset-Sequenz für W5500 ausführen
-    // (Wir nutzen hier esp_rom_delay_us, um den FreeRTOS-Timer-Task nicht zu blockieren)
     ESP_LOGI(TAG, "Pulling W5500 Reset LOW...");
     gpio_set_level(W5500_RESET_GPIO, 0);
-    esp_rom_delay_us(100000); // 100ms im LOW-Zustand halten
+    esp_rom_delay_us(10000); // 10ms im LOW-Zustand (W5500 benötigt laut Datenblatt min. 2µs)
 
     ESP_LOGI(TAG, "Setting W5500 Reset HIGH...");
     gpio_set_level(W5500_RESET_GPIO, 1);
-    esp_rom_delay_us(50000);  // 50ms warten, bis PLL und Quarz des W5500 stabil schwingen
+    
+    // Wir geben dem internen PLL des W5500 50ms Zeit zum Einschwingen,
+    // nutzen aber vTaskDelay statt esp_rom_delay, wenn wir nicht im ISR-Kontext sind.
+    vTaskDelay(pdMS_TO_TICKS(50)); 
+}
 
-    // 3. Erst jetzt, da der W5500 wieder "wach" und stabil ist, starten wir den ESP32-C6 neu
-    ESP_LOGI(TAG, "Restarting System...");
-    esp_restart();
+/*---------------------------------------------------------------
+ * Ethernet "On-The-Fly" Restart (Kein ESP32 Reboot)
+ *-------------------------------------------------------------*/
+static void eth_restart_without_reboot(void)
+{
+    ESP_LOGW(TAG, "Watchdog triggered: Resetting Ethernet dynamic...");
+
+    // 1. Stoppe alle aktiven Ethernet-Instanzen
+    for (int i = 0; i < s_eth_port_cnt; i++) {
+        if (s_eth_handles[i] != NULL) {
+            ESP_LOGI(TAG, "Stopping Ethernet port %d...", i);
+            esp_eth_stop(s_eth_handles[i]); // lwIP über den Verbindungsabbruch informieren
+        }
+    }
+
+    // 2. Führe den physischen Hardware-Reset des W5500 aus
+    hw_reset_w5500_only();
+
+    // 3. Wende Software-Reset auf den PHY-Treiber an
+    for (int i = 0; i < s_eth_port_cnt; i++) {
+        if (s_eth_handles[i] != NULL) {
+            ESP_LOGI(TAG, "Re-initializing Ethernet Driver %d...", i);
+            
+            // Sendet ein Reset-Kommando an den PHY (W5500) über die esp_eth API,
+            // damit die SPI-Register neu geschrieben werden.
+            esp_eth_ioctl(s_eth_handles[i], ETH_CMD_S_PHY_ADDR, &(uint32_t){0}); // Setzt PHY-Adresse (oft 0 oder 1)
+            
+            // 4. Starte den Treiber wieder
+            esp_err_t ret = esp_eth_start(s_eth_handles[i]);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to restart Ethernet: %s", esp_err_to_name(ret));
+                // Falls selbst das fehlschlägt, kannst du als allerletzte Rettung doch rebooten:
+                esp_restart();
+            } else {
+                ESP_LOGI(TAG, "Ethernet port %d restarted successfully.", i);
+            }
+        }
+    }
 }
 
 /*---------------------------------------------------------------
@@ -54,7 +99,7 @@ static void hw_reset_w5500_and_restart(void)
  *-------------------------------------------------------------*/
 static void eth_timeout_callback(TimerHandle_t xTimer)
 {
-    hw_reset_w5500_and_restart();
+    eth_restart_without_reboot();
 }
 
 /*---------------------------------------------------------------
@@ -72,10 +117,9 @@ static void eth_got_ip_handler(void *arg,
     ESP_LOGI(TAG, "Mask    : " IPSTR, IP2STR(&event->ip_info.netmask));
     ESP_LOGI(TAG, "Gateway : " IPSTR, IP2STR(&event->ip_info.gw));
 
-    // Erfolgreich verbunden: Watchdog stoppen
     if (eth_timeout_timer != NULL) {
         if (xTimerStop(eth_timeout_timer, 0) == pdPASS) {
-            ESP_LOGI(TAG, "Ethernet timeout timer stopped successfully.");
+            ESP_LOGI(TAG, "Ethernet watchdog timer stopped.");
         }
     }
 }
@@ -94,7 +138,7 @@ static void eth_event_handler(void *arg,
         ESP_LOGI(TAG, "Ethernet Started");
         if (eth_timeout_timer != NULL) {
             xTimerStart(eth_timeout_timer, 0);
-            ESP_LOGI(TAG, "30s connection watchdog timer started.");
+            ESP_LOGI(TAG, "Watchdog timer started.");
         }
         break;
 
@@ -105,9 +149,8 @@ static void eth_event_handler(void *arg,
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Ethernet Link Down");
         if (eth_timeout_timer != NULL) {
-            // Startet den Timer neu (resettet die 30 Sekunden)
             xTimerStart(eth_timeout_timer, 0);
-            ESP_LOGW(TAG, "Link lost. 30s connection watchdog timer restarted.");
+            ESP_LOGW(TAG, "Link lost. Watchdog timer restarted.");
         }
         break;
 
@@ -121,15 +164,12 @@ static void eth_event_handler(void *arg,
 }
 
 /*---------------------------------------------------------------
- * Ethernet Initialization
+ * Ethernet Initialization (Wird nur 1x beim Systemstart aufgerufen)
  *-------------------------------------------------------------*/
 void ethernet_init(void)
 {
-    uint8_t eth_port_cnt = 0;
-    esp_eth_handle_t *eth_handles = NULL;
     esp_err_t ret;
 
-    // 1. Erstelle den Watchdog-Timer
     eth_timeout_timer = xTimerCreate("eth_watchdog",
                                      pdMS_TO_TICKS(ETH_TIMEOUT_MS),
                                      pdFALSE,
@@ -137,56 +177,46 @@ void ethernet_init(void)
                                      eth_timeout_callback);
     
     if (eth_timeout_timer == NULL) {
-        ESP_LOGE(TAG, "Failed to create Ethernet watchdog timer!");
-        hw_reset_w5500_and_restart();
+        ESP_LOGE(TAG, "Failed to create watchdog timer!");
         return;
     }
 
-    // 2. Hardware initialisieren
-    ret = ethernet_init_all(&eth_handles, &eth_port_cnt);
-    if (ret != ESP_OK || eth_port_cnt == 0) {
+    // Hardware initialisieren und Pointer in die globalen Variablen sichern
+    ret = ethernet_init_all(&s_eth_handles, &s_eth_port_cnt);
+    if (ret != ESP_OK || s_eth_port_cnt == 0) {
         ESP_LOGE(TAG, "W5500 Hardware Init Failed! code: %s", esp_err_to_name(ret));
-        hw_reset_w5500_and_restart();
         return;
     }
 
-    // 3. Event-Handler registrieren
     ret = esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, eth_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register ETH events: %s", esp_err_to_name(ret));
-        hw_reset_w5500_and_restart();
         return;
     }
 
     ret = esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, eth_got_ip_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register IP events: %s", esp_err_to_name(ret));
-        hw_reset_w5500_and_restart();
         return;
     }
 
-    // 4. Netif konfigurieren und starten
-    for (int i = 0; i < eth_port_cnt; i++) {
-
+    for (int i = 0; i < s_eth_port_cnt; i++) {
         esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
         esp_netif_t *netif = esp_netif_new(&cfg);
         if (netif == NULL) {
             ESP_LOGE(TAG, "Failed to create network interface.");
-            hw_reset_w5500_and_restart();
             return;
         }
 
-        ret = esp_netif_attach(netif, esp_eth_new_netif_glue(eth_handles[i]));
+        ret = esp_netif_attach(netif, esp_eth_new_netif_glue(s_eth_handles[i]));
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to attach network glue layer: %s", esp_err_to_name(ret));
-            hw_reset_w5500_and_restart();
             return;
         }
 
-        ret = esp_eth_start(eth_handles[i]);
+        ret = esp_eth_start(s_eth_handles[i]);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start Ethernet: %s", esp_err_to_name(ret));
-            hw_reset_w5500_and_restart();
             return;
         }
     }

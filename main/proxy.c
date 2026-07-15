@@ -11,9 +11,11 @@
 
 static const char *TAG = "PROXY";
 
-#define PROXY_STACK_SIZE 3072 // Reduziert, da der Puffer auf dem Heap liegt
+// Erhöht auf 4096 zur Vermeidung von Stack-Overflows durch lwIP/ESP_LOG
+#define PROXY_STACK_SIZE 4096 
 #define PROXY_PRIORITY   5
 #define BUFFER_SIZE      1460
+#define SEND_TIMEOUT_MS  5000 // Maximal 5 Sekunden auf blockierenden Schreibpuffer warten
 
 typedef struct
 {
@@ -26,45 +28,49 @@ typedef struct
  * Hilfsfunktionen für Socket-Sicherheit & TCP-Verwaltung
  *-------------------------------------------------------------*/
 
-// Konfiguriert Sockets gegen Blockaden, Time-Outs und "Zombie-Verbindungen"
 static void configure_socket_safety(int fd) {
-    // 1. Non-blocking Modus aktivieren (für asynchrones select())
+    // 1. Non-blocking Modus aktivieren
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags != -1) {
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
 
-    // 2. TCP Keep-Alive aktivieren (erkennt Kabel-Trennen oder tote Gegenstellen)
+    // 2. TCP Keep-Alive aktivieren
     int keepalive = 1;
-    int keepidle = 10;   // 10s Inaktivität, bevor Sonden gesendet werden
-    int keepintvl = 2;   // Alle 2s eine Sonde senden
-    int keepcnt = 3;     // Nach 3 unbeantworteten Sonden Verbindung trennen
+    int keepidle = 10;   
+    int keepintvl = 2;   
+    int keepcnt = 3;     
     
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 
-    // 3. SO_LINGER konfigurieren
-    // Verhindert, dass geschlossene Sockets minutenlang im Zustand TIME_WAIT verharren.
-    // l_onoff = 1, l_linger = 0 erzwingt beim Schließen einen direkten TCP-RST (Reset).
-    struct linger sl = { .l_onoff = 1, .l_linger = 0 }; 
-    setsockopt(fd, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
+    // HINWEIS: SO_LINGER mit l_linger = 0 wurde entfernt.
+    // Ein sauberer TCP-Abbau (FIN) ist stabiler für Datenintegrität.
 }
 
-// Sendet Daten blockierungsfrei und fängt Teilschreibvorgänge (Partial Writes) ab
+// Sendet Daten blockierungsfrei mit integriertem Timeout-Schutz gegen "Hänger"
 static int send_all(int fd, const uint8_t *buf, int len) {
     int total_sent = 0;
+    int attempts = 0;
+    const int max_attempts = SEND_TIMEOUT_MS / 10; // z.B. 500 Versuche à 10ms
+
     while (total_sent < len) {
         int sent = send(fd, buf + total_sent, len - total_sent, 0);
         if (sent <= 0) {
             if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                vTaskDelay(pdMS_TO_TICKS(5)); // Kurz abgeben und erneut versuchen
+                if (++attempts > max_attempts) {
+                    ESP_LOGW(TAG, "Schreib-Timeout am Socket %d erreicht.", fd);
+                    return -1; // Timeout-Abbruch
+                }
+                vTaskDelay(pdMS_TO_TICKS(10)); 
                 continue;
             }
-            return -1; // Allgemeiner Verbindungsfehler beim Senden
+            return -1; 
         }
         total_sent += sent;
+        attempts = 0; // Bei Erfolg Zähler zurücksetzen
     }
     return total_sent;
 }
@@ -93,7 +99,6 @@ static void proxy_task(void *arg)
     }
 
     int opt = 1;
-    // SO_REUSEADDR erlaubt das sofortige Wiederbinden des Ports nach einem Reset
     setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     if (bind(listen_sock, (struct sockaddr *)&listen_addr, sizeof(listen_addr)) != 0) {
@@ -114,38 +119,41 @@ static void proxy_task(void *arg)
 
         int client = accept(listen_sock, (struct sockaddr *)&client_addr, &addr_len);
         if (client < 0) {
-            vTaskDelay(pdMS_TO_TICKS(10)); // Watchdog füttern
+            vTaskDelay(pdMS_TO_TICKS(50)); // Leicht erhöht, um CPU bei Fehlern zu entlasten
             continue;
         }
 
         ESP_LOGI(TAG, "Client verbunden!");
         led_set_max_brightness(100);
-        led_set_blink_color(0, 255, 255); // Cyan
+        led_set_blink_color(0, 255, 255); 
 
         struct sockaddr_in remote_addr = {};
         remote_addr.sin_family = AF_INET;
         remote_addr.sin_port = htons(cfg->remote_port);
-        inet_pton(AF_INET, cfg->remote_ip, &remote_addr.sin_addr);
+        
+        if (inet_pton(AF_INET, cfg->remote_ip, &remote_addr.sin_addr) != 1) {
+            ESP_LOGE(TAG, "Ungültige IP-Adresse: %s", cfg->remote_ip);
+            close(client);
+            continue;
+        }
 
         int server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (server < 0) {
             ESP_LOGE(TAG, "Konnte Server-Socket nicht erstellen");
-            close(client); // Wichtig! Offenen Client-Socket direkt wieder schließen
+            close(client); 
             continue;
         }
 
-        // Setze Lese-/Schreib-Timeout für den Verbindungsaufbau (Standardmäßig blockierend)
-        struct timeval conn_timeout = { .tv_sec = 5, .tv_usec = 0 }; // 5 Sekunden Timeout
+        struct timeval conn_timeout = { .tv_sec = 5, .tv_usec = 0 }; 
         setsockopt(server, SOL_SOCKET, SO_SNDTIMEO, &conn_timeout, sizeof(conn_timeout));
 
         if (connect(server, (struct sockaddr *)&remote_addr, sizeof(remote_addr)) != 0) {
             ESP_LOGE(TAG, "Konnte keine Verbindung zu %s:%u aufbauen", cfg->remote_ip, cfg->remote_port);
-            close(client); // Sicherer Abbau
-            close(server); // Sicherer Abbau
+            close(client); 
+            close(server); 
             continue;
         }
 
-        // Sockets für den sicheren Datentransfer konfigurieren (Non-blocking, Keep-Alive, Linger)
         configure_socket_safety(client);
         configure_socket_safety(server);
 
@@ -158,42 +166,38 @@ static void proxy_task(void *arg)
             FD_SET(server, &readfds);
 
             int maxfd = client > server ? client : server;
-
-            // Lese-Inaktivitäts-Timeout: Nach 30 Sekunden Stille trennen wir die Verbindung,
-            // um "tote Leitungen" zu eliminieren (schützt vor Socket-Vollauf).
             struct timeval timeout = { .tv_sec = 30, .tv_usec = 0 };
             int ret = select(maxfd + 1, &readfds, NULL, NULL, &timeout);
 
             if (ret < 0) {
-                break; // Select-Fehler -> Schleife verlassen
+                ESP_LOGE(TAG, "Select-Fehler, schließe Sockets.");
+                break; 
             }
             if (ret == 0) {
                 ESP_LOGW(TAG, "Inaktivitäts-Timeout (30s) erreicht. Schließe Verbindung.");
-                break; // Timeout -> Abbruch
+                break; 
             }
 
-            // Fall 1: Client hat Daten gesendet -> Weiterleiten an Server
             if (FD_ISSET(client, &readfds)) {
                 int len = recv(client, buffer, BUFFER_SIZE, 0);
                 if (len <= 0) {
                     if (len < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                         continue;
                     }
-                    break; // Client hat Verbindung geschlossen oder Error
+                    break; 
                 }
                 if (send_all(server, buffer, len) < 0) {
                     break;
                 }
             }
 
-            // Fall 2: Server hat Daten gesendet -> Weiterleiten an Client
             if (FD_ISSET(server, &readfds)) {
                 int len = recv(server, buffer, BUFFER_SIZE, 0);
                 if (len <= 0) {
                     if (len < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                         continue;
                     }
-                    break; // Server hat Verbindung geschlossen oder Error
+                    break; 
                 }
                 if (send_all(client, buffer, len) < 0) {
                     break;
@@ -203,9 +207,8 @@ static void proxy_task(void *arg)
 
         ESP_LOGI(TAG, "Verbindung beendet. Räume Sockets auf...");
         led_set_max_brightness(100);
-        led_set_blink_color(255, 0, 0); // Rot
+        led_set_blink_color(255, 0, 0); 
 
-        // Beide Sockets geordnet schließen & Ressourcen freigeben
         shutdown(client, SHUT_RDWR);
         shutdown(server, SHUT_RDWR);
         close(client);
@@ -240,11 +243,17 @@ void proxy_start(uint16_t listen_port, const char *remote_ip, uint16_t remote_po
     strncpy(cfg->remote_ip, remote_ip, sizeof(cfg->remote_ip) - 1);
     cfg->remote_ip[sizeof(cfg->remote_ip) - 1] = '\0';
 
-    xTaskCreate(
+    BaseType_t result = xTaskCreate(
         proxy_task,
         "proxy",
         PROXY_STACK_SIZE,
         cfg,
         PROXY_PRIORITY,
         NULL);
+
+    // Behebt Speicherleck, falls der Task-Start fehlschlägt
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Task-Erstellung fehlgeschlagen!");
+        free(cfg);
+    }
 }
