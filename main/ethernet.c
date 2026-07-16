@@ -9,7 +9,8 @@
 #include "freertos/timers.h"
 #include "sdkconfig.h"
 #include "esp_rom_sys.h"
-#include "esp_heap_caps.h" 
+#include "esp_heap_caps.h"
+#include "lwip/ip_addr.h" 
 
 static const char *TAG = "ETH";
 
@@ -151,56 +152,59 @@ static void eth_event_handler(void *arg,
         ESP_LOGI(TAG, "Ethernet Started");
         break;
 
-    case ETHERNET_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "Ethernet Link Up");
-        break;
+   case ETHERNET_EVENT_CONNECTED:
+    ESP_LOGI(TAG, "Ethernet Link Up");
+    
+    // Stop the watchdog immediately
+    if (eth_timeout_timer != NULL) {
+        xTimerStop(eth_timeout_timer, 0);
+        ESP_LOGI(TAG, "Ethernet watchdog timer stopped.");
+    }
+
+    // Force the network interface up and active
+    if (s_netif) {
+        // Bring the interface up logically in the IP stack
+        esp_netif_action_connected(s_netif, NULL, 0, NULL); 
+        
+        // Start the DHCP Server
+        esp_err_t err = esp_netif_dhcps_start(s_netif);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "DHCP Server successfully started on 192.168.4.1");
+        } else if (err == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+            ESP_LOGI(TAG, "DHCP Server was already running.");
+        } else {
+            ESP_LOGE(TAG, "Failed to start DHCP Server: %s", esp_err_to_name(err));
+        }
+    }
+    break;
 
     case ETHERNET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "Ethernet Link Down");
-        if (eth_timeout_timer) {
-             xTimerReset(eth_timeout_timer, 0);
-        }
-    break;
-
-    case ETHERNET_EVENT_STOP:
-
-    ESP_LOGW(TAG, "Ethernet Stopped");
-
+    ESP_LOGW(TAG, "Ethernet Link Down");
+    if (s_netif) {
+        esp_netif_dhcps_stop(s_netif);
+    }
     if (eth_timeout_timer) {
-        xTimerStop(eth_timeout_timer, 0);
-    }
-
-    if (s_restart_pending) {
-
-        ESP_LOGW(TAG, "Resetting W5500...");
-
-        //hw_reset_w5500_only();
-
-        vTaskDelay(pdMS_TO_TICKS(100));
-
-        for (int i = 0; i < s_eth_port_cnt; i++) {
-
-            esp_err_t err = esp_eth_start(s_eth_handles[i]);
-
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "esp_eth_start failed: %s",
-                         esp_err_to_name(err));
-            }
-        }
-
-        s_restart_pending = false;
+        xTimerReset(eth_timeout_timer, 0);
     }
     break;
+    case ETHERNET_EVENT_STOP:
+        ESP_LOGW(TAG, "Ethernet Stopped");
+        if (eth_timeout_timer) {
+            xTimerStop(eth_timeout_timer, 0);
+        }
+        break;
     }
 }
 
+
 /*---------------------------------------------------------------
- * Ethernet Initialization (Wird nur 1x beim Systemstart aufgerufen)
+ * Ethernet Initialization (DHCP Server Configuration)
  *-------------------------------------------------------------*/
 void ethernet_init(void)
 {
     esp_err_t ret;
 
+    // 1. Create the Watchdog/Timeout Timer
     eth_timeout_timer = xTimerCreate(
         "eth_watchdog",
         pdMS_TO_TICKS(ETH_TIMEOUT_MS),
@@ -213,14 +217,14 @@ void ethernet_init(void)
         return;
     }
 
-    /* Initialize Ethernet hardware */
+    /* 2. Initialize the Ethernet Hardware (W5500 SPI) */
     ret = ethernet_init_all(&s_eth_handles, &s_eth_port_cnt);
     if ((ret != ESP_OK) || (s_eth_port_cnt == 0)) {
         ESP_LOGE(TAG, "W5500 Hardware Init Failed: %s", esp_err_to_name(ret));
         return;
     }
 
-    /* Register event handlers */
+    /* 3. Register Event Handlers */
     ESP_ERROR_CHECK(esp_event_handler_register(
         ETH_EVENT,
         ESP_EVENT_ANY_ID,
@@ -233,15 +237,53 @@ void ethernet_init(void)
         eth_got_ip_handler,
         NULL));
 
-    /* Create netif and attach Ethernet driver */
-    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+    /* -------------------------------------------------------------
+     * CUSTOM DHCP SERVER NETWORK INTERFACE CONFIG
+     * ------------------------------------------------------------- */
 
+    // Prepare our static IP block
+    esp_netif_ip_info_t ip_info;
+    memset(&ip_info, 0, sizeof(esp_netif_ip_info_t));
+    ip_info.ip.addr      = ESP_IP4TOADDR(192, 168, 4, 1);       // ESP32 Static IP (Gateway)
+    ip_info.gw.addr      = ESP_IP4TOADDR(192, 168, 4, 1);       // Gateway points to itself
+    ip_info.netmask.addr = ESP_IP4TOADDR(255, 255, 255, 0);     // Subnet Mask
+
+    // Grab default inherent configurations for Ethernet
+    esp_netif_inherent_config_t inherent_cfg = ESP_NETIF_INHERENT_DEFAULT_ETH();
+    
+    // CRITICAL FIX: Declare this netif strictly as a DHCP Server.
+    // We omit "ESP_NETIF_DHCP_CLIENT" entirely so the ESP32 never tries to behave like a client.
+    inherent_cfg.flags = ESP_NETIF_DHCP_SERVER | ESP_NETIF_FLAG_GARP | ESP_NETIF_FLAG_EVENT_IP_MODIFIED;
+    inherent_cfg.ip_info = &ip_info;
+    inherent_cfg.if_key = "ETH_DHCPS";
+    inherent_cfg.if_desc = "eth_dhcp_server";
+    inherent_cfg.route_prio = 50;
+
+    // Build the outer configuration block
+    esp_netif_config_t cfg = {
+        .base = &inherent_cfg,
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
+    };
+
+    // Create the customized network interface
     s_netif = esp_netif_new(&cfg);
     if (s_netif == NULL) {
         ESP_LOGE(TAG, "Failed to create Ethernet netif");
         return;
     }
 
+    // CRITICAL FIX: To prevent 0x5007, we must ensure both DHCP state machines are inactive 
+    // before applying/modifying static IP settings.
+    esp_netif_dhcpc_stop(s_netif);             // Safe to call even if client isn't active
+    esp_netif_dhcps_stop(s_netif);             // Stop default server thread to allow IP changes
+
+    // Apply the static IP structure to bind the interface safely
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_netif, &ip_info));
+    ESP_LOGI(TAG, "Interface bound to static IP: 192.168.4.1");
+
+    /* ------------------------------------------------------------- */
+
+    /* 4. Attach the W5500 Ethernet Driver to our Custom Netif */
     ret = esp_netif_attach(
         s_netif,
         esp_eth_new_netif_glue(s_eth_handles[0]));
@@ -252,6 +294,7 @@ void ethernet_init(void)
         return;
     }
 
+    /* 5. Fire up the Physical Link */
     ret = esp_eth_start(s_eth_handles[0]);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start Ethernet: %s",
