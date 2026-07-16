@@ -16,29 +16,15 @@ static const char *TAG = "WIFI";
 
 static TimerHandle_t wifi_timeout_timer = NULL;
 
-/*---------------------------------------------------------------
- * Subsystem Reset Logic
- *-------------------------------------------------------------*/
-static void wifi_reset_and_restart(void)
-{
-    ESP_LOGE(TAG, "Wi-Fi error or connection timeout! Resetting Wi-Fi radio and restarting ESP32-C6...");
-
-    // Forcefully stop and de-initialize the internal Wi-Fi stack to cleanly release RF hardware
-    esp_wifi_stop();
-    esp_wifi_deinit();
-
-    vTaskDelay(pdMS_TO_TICKS(100)); // Let hardware power rails settle
-
-    // Restart the ESP32-C6
-    esp_restart();
-}
 
 /*---------------------------------------------------------------
  * Timer Callback
  *-------------------------------------------------------------*/
 static void wifi_timeout_callback(TimerHandle_t xTimer)
 {
-    wifi_reset_and_restart();
+    ESP_LOGE(TAG, "WiFi timeout");
+
+    esp_restart();
 }
 
 /*---------------------------------------------------------------
@@ -58,7 +44,7 @@ static void wifi_event_handler(void *arg,
             
             // Start the 30-second connection timer
             if (wifi_timeout_timer != NULL) {
-                xTimerStart(wifi_timeout_timer, 0);
+                xTimerReset(wifi_timeout_timer, 0);
                 ESP_LOGI(TAG, "30s Wi-Fi connection watchdog timer started.");
             }
             
@@ -70,7 +56,7 @@ static void wifi_event_handler(void *arg,
             
             // Restart the timer so we restart if we can't reconnect within 30s
             if (wifi_timeout_timer != NULL) {
-                xTimerStart(wifi_timeout_timer, 0);
+                xTimerReset(wifi_timeout_timer, 0);
                 ESP_LOGW(TAG, "Connection lost. 30s Wi-Fi watchdog timer restarted.");
             }
             
@@ -116,7 +102,7 @@ void wifi_init(void)
     
     if (wifi_timeout_timer == NULL) {
         ESP_LOGE(TAG, "Failed to create Wi-Fi watchdog timer!");
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 
@@ -124,7 +110,7 @@ void wifi_init(void)
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
     if (sta_netif == NULL) {
         ESP_LOGE(TAG, "Failed to create default Wi-Fi Station Netif interface.");
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 
@@ -133,7 +119,7 @@ void wifi_init(void)
     ret = esp_wifi_init(&cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize Wi-Fi driver: %s", esp_err_to_name(ret));
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 
@@ -149,14 +135,14 @@ void wifi_init(void)
     ret = esp_wifi_set_mode(WIFI_MODE_STA);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set Wi-Fi mode: %s", esp_err_to_name(ret));
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 
     ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write Wi-Fi configuration: %s", esp_err_to_name(ret));
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 
@@ -164,14 +150,14 @@ void wifi_init(void)
     ret = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register WIFI events: %s", esp_err_to_name(ret));
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 
     ret = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register IP events: %s", esp_err_to_name(ret));
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 
@@ -179,7 +165,7 @@ void wifi_init(void)
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start Wi-Fi driver: %s", esp_err_to_name(ret));
-        wifi_reset_and_restart();
+        esp_restart();
         return;
     }
 

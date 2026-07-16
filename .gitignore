@@ -69,3 +69,4 @@ Thumbs.db
 *.tmp
 main/Kconfig.projbuild
 
+log.sample_project.*.txt

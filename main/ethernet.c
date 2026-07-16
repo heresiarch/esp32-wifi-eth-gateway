@@ -8,7 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "sdkconfig.h"
-#include "esp_rom_sys.h" 
+#include "esp_rom_sys.h"
+#include "esp_heap_caps.h" 
 
 static const char *TAG = "ETH";
 
@@ -21,11 +22,16 @@ static TimerHandle_t eth_timeout_timer = NULL;
 static esp_eth_handle_t *s_eth_handles = NULL;
 static uint8_t s_eth_port_cnt = 0;
 
+static bool s_restart_pending = false;
+
+static esp_netif_t *s_netif = NULL;
+
+
 /*---------------------------------------------------------------
  * Lokale Prototypen
  *-------------------------------------------------------------*/
 static void hw_reset_w5500_only(void);
-static void eth_restart_without_reboot(void);
+//static void eth_restart_without_reboot(void);
 
 
 /*---------------------------------------------------------------
@@ -54,9 +60,44 @@ static void hw_reset_w5500_only(void)
     vTaskDelay(pdMS_TO_TICKS(50)); 
 }
 
+static void eth_health_check(void)
+{
+    uint8_t mac[6];
+    esp_err_t err;
+
+    err = esp_eth_ioctl(s_eth_handles[0], ETH_CMD_G_MAC_ADDR, mac);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "MAC OK: %02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2],
+                 mac[3], mac[4], mac[5]);
+    } else {
+        ESP_LOGE(TAG,
+                 "Cannot read MAC: %s",
+                 esp_err_to_name(err));
+    }
+
+    esp_netif_ip_info_t ip;
+
+    if (esp_netif_get_ip_info(s_netif, &ip) == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "Current IP: " IPSTR,
+                 IP2STR(&ip.ip));
+    }
+
+    ESP_LOGI(TAG,
+         "Heap: %u  Min: %u",
+         esp_get_free_heap_size(),
+         esp_get_minimum_free_heap_size());
+}
+
+
+
 /*---------------------------------------------------------------
  * Ethernet "On-The-Fly" Restart (Kein ESP32 Reboot)
  *-------------------------------------------------------------*/
+/*
 static void eth_restart_without_reboot(void)
 {
     ESP_LOGW(TAG, "Watchdog triggered: Resetting Ethernet dynamic...");
@@ -93,15 +134,30 @@ static void eth_restart_without_reboot(void)
         }
     }
 }
+*/
+
 
 /*---------------------------------------------------------------
  * Timer Callback
  *-------------------------------------------------------------*/
 static void eth_timeout_callback(TimerHandle_t xTimer)
 {
-    eth_restart_without_reboot();
-}
+    ESP_LOGW(TAG, "Ethernet watchdog timeout.");
+    eth_health_check();
+    
+    if (s_restart_pending) {
+        return;
+    }
 
+    s_restart_pending = true;
+
+    for (int i = 0; i < s_eth_port_cnt; i++) {
+        if (s_eth_handles[i]) {
+            ESP_LOGI(TAG, "Stopping Ethernet port %d...", i);
+            esp_eth_stop(s_eth_handles[i]);
+        }
+    }
+}
 /*---------------------------------------------------------------
  * Ethernet IP Event
  *-------------------------------------------------------------*/
@@ -136,10 +192,6 @@ static void eth_event_handler(void *arg,
 
     case ETHERNET_EVENT_START:
         ESP_LOGI(TAG, "Ethernet Started");
-        if (eth_timeout_timer != NULL) {
-            xTimerStart(eth_timeout_timer, 0);
-            ESP_LOGI(TAG, "Watchdog timer started.");
-        }
         break;
 
     case ETHERNET_EVENT_CONNECTED:
@@ -148,18 +200,40 @@ static void eth_event_handler(void *arg,
 
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Ethernet Link Down");
-        if (eth_timeout_timer != NULL) {
-            xTimerStart(eth_timeout_timer, 0);
-            ESP_LOGW(TAG, "Link lost. Watchdog timer restarted.");
+        if (eth_timeout_timer) {
+             xTimerReset(eth_timeout_timer, 0);
         }
-        break;
+    break;
 
     case ETHERNET_EVENT_STOP:
-        ESP_LOGW(TAG, "Ethernet Stopped");
-        if (eth_timeout_timer != NULL) {
-            xTimerStop(eth_timeout_timer, 0);
+
+    ESP_LOGW(TAG, "Ethernet Stopped");
+
+    if (eth_timeout_timer) {
+        xTimerStop(eth_timeout_timer, 0);
+    }
+
+    if (s_restart_pending) {
+
+        ESP_LOGW(TAG, "Resetting W5500...");
+
+        //hw_reset_w5500_only();
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+
+        for (int i = 0; i < s_eth_port_cnt; i++) {
+
+            esp_err_t err = esp_eth_start(s_eth_handles[i]);
+
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "esp_eth_start failed: %s",
+                         esp_err_to_name(err));
+            }
         }
-        break;
+
+        s_restart_pending = false;
+    }
+    break;
     }
 }
 
@@ -170,54 +244,61 @@ void ethernet_init(void)
 {
     esp_err_t ret;
 
-    eth_timeout_timer = xTimerCreate("eth_watchdog",
-                                     pdMS_TO_TICKS(ETH_TIMEOUT_MS),
-                                     pdFALSE,
-                                     NULL,
-                                     eth_timeout_callback);
-    
+    eth_timeout_timer = xTimerCreate(
+        "eth_watchdog",
+        pdMS_TO_TICKS(ETH_TIMEOUT_MS),
+        pdFALSE,
+        NULL,
+        eth_timeout_callback);
+
     if (eth_timeout_timer == NULL) {
         ESP_LOGE(TAG, "Failed to create watchdog timer!");
         return;
     }
 
-    // Hardware initialisieren und Pointer in die globalen Variablen sichern
+    /* Initialize Ethernet hardware */
     ret = ethernet_init_all(&s_eth_handles, &s_eth_port_cnt);
-    if (ret != ESP_OK || s_eth_port_cnt == 0) {
-        ESP_LOGE(TAG, "W5500 Hardware Init Failed! code: %s", esp_err_to_name(ret));
+    if ((ret != ESP_OK) || (s_eth_port_cnt == 0)) {
+        ESP_LOGE(TAG, "W5500 Hardware Init Failed: %s", esp_err_to_name(ret));
         return;
     }
 
-    ret = esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, eth_event_handler, NULL);
+    /* Register event handlers */
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        ETH_EVENT,
+        ESP_EVENT_ANY_ID,
+        eth_event_handler,
+        NULL));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        IP_EVENT,
+        IP_EVENT_ETH_GOT_IP,
+        eth_got_ip_handler,
+        NULL));
+
+    /* Create netif and attach Ethernet driver */
+    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+
+    s_netif = esp_netif_new(&cfg);
+    if (s_netif == NULL) {
+        ESP_LOGE(TAG, "Failed to create Ethernet netif");
+        return;
+    }
+
+    ret = esp_netif_attach(
+        s_netif,
+        esp_eth_new_netif_glue(s_eth_handles[0]));
+
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register ETH events: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to attach Ethernet netif: %s",
+                 esp_err_to_name(ret));
         return;
     }
 
-    ret = esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, eth_got_ip_handler, NULL);
+    ret = esp_eth_start(s_eth_handles[0]);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register IP events: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to start Ethernet: %s",
+                 esp_err_to_name(ret));
         return;
-    }
-
-    for (int i = 0; i < s_eth_port_cnt; i++) {
-        esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
-        esp_netif_t *netif = esp_netif_new(&cfg);
-        if (netif == NULL) {
-            ESP_LOGE(TAG, "Failed to create network interface.");
-            return;
-        }
-
-        ret = esp_netif_attach(netif, esp_eth_new_netif_glue(s_eth_handles[i]));
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to attach network glue layer: %s", esp_err_to_name(ret));
-            return;
-        }
-
-        ret = esp_eth_start(s_eth_handles[i]);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to start Ethernet: %s", esp_err_to_name(ret));
-            return;
-        }
     }
 }

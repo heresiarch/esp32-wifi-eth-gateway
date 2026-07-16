@@ -53,12 +53,21 @@ void app_main(void)
 
     // Initialize non-blocking 30 ms timer on GPIO 21
     ESP_ERROR_CHECK(led_init(CONFIG_RGB_LED_GPIO, 100));
-    
+    uint32_t counter = 0;
     while (1) {
         
-        //ESP_LOGI("main", "Setting blink color to Orange...");
+        if (++counter >= 60) {
+
+        counter = 0;
+
+        ESP_LOGI(TAG,
+                 "Heap=%u  MinHeap=%u",
+                 esp_get_free_heap_size(),
+                 esp_get_minimum_free_heap_size());
+        }
+
         led_set_max_brightness(15);
-        led_set_blink_color(0, 255, 0); // Orange
+        led_set_blink_color(0, 255, 0); // green
         led_set_max_brightness(15);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
