@@ -95,49 +95,6 @@ static void eth_health_check(void)
 
 
 /*---------------------------------------------------------------
- * Ethernet "On-The-Fly" Restart (Kein ESP32 Reboot)
- *-------------------------------------------------------------*/
-/*
-static void eth_restart_without_reboot(void)
-{
-    ESP_LOGW(TAG, "Watchdog triggered: Resetting Ethernet dynamic...");
-
-    // 1. Stoppe alle aktiven Ethernet-Instanzen
-    for (int i = 0; i < s_eth_port_cnt; i++) {
-        if (s_eth_handles[i] != NULL) {
-            ESP_LOGI(TAG, "Stopping Ethernet port %d...", i);
-            esp_eth_stop(s_eth_handles[i]); // lwIP über den Verbindungsabbruch informieren
-        }
-    }
-
-    // 2. Führe den physischen Hardware-Reset des W5500 aus
-    hw_reset_w5500_only();
-
-    // 3. Wende Software-Reset auf den PHY-Treiber an
-    for (int i = 0; i < s_eth_port_cnt; i++) {
-        if (s_eth_handles[i] != NULL) {
-            ESP_LOGI(TAG, "Re-initializing Ethernet Driver %d...", i);
-            
-            // Sendet ein Reset-Kommando an den PHY (W5500) über die esp_eth API,
-            // damit die SPI-Register neu geschrieben werden.
-            esp_eth_ioctl(s_eth_handles[i], ETH_CMD_S_PHY_ADDR, &(uint32_t){0}); // Setzt PHY-Adresse (oft 0 oder 1)
-            
-            // 4. Starte den Treiber wieder
-            esp_err_t ret = esp_eth_start(s_eth_handles[i]);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to restart Ethernet: %s", esp_err_to_name(ret));
-                // Falls selbst das fehlschlägt, kannst du als allerletzte Rettung doch rebooten:
-                esp_restart();
-            } else {
-                ESP_LOGI(TAG, "Ethernet port %d restarted successfully.", i);
-            }
-        }
-    }
-}
-*/
-
-
-/*---------------------------------------------------------------
  * Timer Callback
  *-------------------------------------------------------------*/
 static void eth_timeout_callback(TimerHandle_t xTimer)
