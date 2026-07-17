@@ -138,9 +138,6 @@ static void eth_got_ip_handler(void *arg,
     }
 }
 
-/*---------------------------------------------------------------
- * Ethernet Events
- *-------------------------------------------------------------*/
 static void eth_event_handler(void *arg,
                               esp_event_base_t event_base,
                               int32_t event_id,
@@ -152,50 +149,73 @@ static void eth_event_handler(void *arg,
         ESP_LOGI(TAG, "Ethernet Started");
         break;
 
-   case ETHERNET_EVENT_CONNECTED:
+    case ETHERNET_EVENT_CONNECTED:
     ESP_LOGI(TAG, "Ethernet Link Up");
     
-    // Stop the watchdog immediately
     if (eth_timeout_timer != NULL) {
         xTimerStop(eth_timeout_timer, 0);
-        ESP_LOGI(TAG, "Ethernet watchdog timer stopped.");
     }
 
-    // Force the network interface up and active
     if (s_netif) {
-        // Bring the interface up logically in the IP stack
-        esp_netif_action_connected(s_netif, NULL, 0, NULL); 
+        // 1. Force netif up
+        esp_netif_action_connected(s_netif, event_base, event_id, event_data); 
         
-        // Start the DHCP Server
+        // 2. Stop DHCP server first to clear any stale state
+        esp_netif_dhcps_stop(s_netif);
+
+        // 3. CRITICAL: Re-apply the static IP info so LwIP knows who we are
+        esp_netif_ip_info_t ip_info;
+        ip_info.ip.addr      = ESP_IP4TOADDR(192, 168, 4, 1);
+        ip_info.gw.addr      = ESP_IP4TOADDR(192, 168, 4, 1);
+        ip_info.netmask.addr = ESP_IP4TOADDR(255, 255, 255, 0);
+        
+        esp_err_t ip_err = esp_netif_set_ip_info(s_netif, &ip_info);
+        if (ip_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to re-apply Static IP: %s", esp_err_to_name(ip_err));
+        }
+
+        // 4. Start the DHCP Server now that the IP binding is guaranteed
         esp_err_t err = esp_netif_dhcps_start(s_netif);
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "DHCP Server successfully started on 192.168.4.1");
-        } else if (err == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
-            ESP_LOGI(TAG, "DHCP Server was already running.");
         } else {
             ESP_LOGE(TAG, "Failed to start DHCP Server: %s", esp_err_to_name(err));
         }
     }
     break;
-
+    
     case ETHERNET_EVENT_DISCONNECTED:
     ESP_LOGW(TAG, "Ethernet Link Down");
     if (s_netif) {
         esp_netif_dhcps_stop(s_netif);
+        esp_netif_action_disconnected(s_netif, event_base, event_id, event_data);
     }
+    
+    // Temporarily comment this watchdog start out to verify if the 30-second
+    // watchdog timeout is what's locking you out when unplugged!
+    /*
     if (eth_timeout_timer) {
         xTimerReset(eth_timeout_timer, 0);
     }
+    */
     break;
+
+
     case ETHERNET_EVENT_STOP:
         ESP_LOGW(TAG, "Ethernet Stopped");
+        
+        if (s_netif) {
+            // Symmetrical cleanup when driver stops
+            esp_netif_dhcps_stop(s_netif);
+            esp_netif_action_disconnected(s_netif, event_base, event_id, event_data);
+        }
+        
         if (eth_timeout_timer) {
             xTimerStop(eth_timeout_timer, 0);
         }
         break;
     }
 }
-
 
 /*---------------------------------------------------------------
  * Ethernet Initialization (DHCP Server Configuration)
