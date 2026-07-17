@@ -16,32 +16,39 @@ menu "Project Network Configuration"
     menu "Ethernet & Proxy Settings"
         config ETHERNET_IP
             string "Ethernet Static IP Address"
-            default "192.168.178.129"
+            default "10.0.0.1"
             help
                 Static IP address assigned to the Ethernet interface.
 
-        config ETHERNET_SUBNET
-            string "Ethernet Subnet Mask"
+        config ETHERNET_NETMASK
+            string "Ethernet Netmask"
             default "255.255.255.0"
             help
                 Subnet mask for the Ethernet network (e.g., 255.255.255.0).
 
+        config ETHERNET_GATEWAY
+            string "Ethernet Gateway"
+            default "10.0.0.1"
+            help
+                Subnet mask for the Ethernet network (e.g., 255.255.255.0).
+              
         config SERVER_LISTEN_PORT
             int "Server Listen Port"
-            default 8080
+            default 8888
             range 1 65535
             help
                 The local port number the ESP32 server will listen on for incoming connections.
 
         config PROXY_TARGET_ADDRESS
             string "Proxy Target Address"
-            default "10.0.0.1"
+            #default "192.168.178.5"
+            default "192.168.4.2"
             help
                 The IP address or domain name of the remote proxy target server.
 
         config PROXY_TARGET_PORT
             int "Proxy Target Port"
-            default 8081
+            default 8888
             range 1 65535
             help
                 The port number of the remote proxy target server.

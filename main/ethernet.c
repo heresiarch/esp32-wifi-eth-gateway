@@ -9,7 +9,8 @@
 #include "freertos/timers.h"
 #include "sdkconfig.h"
 #include "esp_rom_sys.h"
-#include "esp_heap_caps.h" 
+#include "esp_heap_caps.h"
+esp_netif_ip_info_t ip_info; 
 
 static const char *TAG = "ETH";
 
@@ -233,7 +234,7 @@ void ethernet_init(void)
         eth_got_ip_handler,
         NULL));
 
-    /* Create netif and attach Ethernet driver */
+    /* Create Ethernet netif */
     esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
 
     s_netif = esp_netif_new(&cfg);
@@ -242,20 +243,36 @@ void ethernet_init(void)
         return;
     }
 
-    ret = esp_netif_attach(
+    /* Attach Ethernet driver */
+    ESP_ERROR_CHECK(esp_netif_attach(
         s_netif,
-        esp_eth_new_netif_glue(s_eth_handles[0]));
+        esp_eth_new_netif_glue(s_eth_handles[0])));
 
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to attach Ethernet netif: %s",
-                 esp_err_to_name(ret));
-        return;
-    }
+    /* Stop DHCP client */
+    ESP_ERROR_CHECK(esp_netif_dhcpc_stop(s_netif));
 
-    ret = esp_eth_start(s_eth_handles[0]);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start Ethernet: %s",
-                 esp_err_to_name(ret));
-        return;
-    }
+    
+
+    esp_netif_ip_info_t ip_info;
+
+    ESP_ERROR_CHECK(esp_netif_str_to_ip4(CONFIG_ETHERNET_IP, &ip_info.ip));
+    ESP_ERROR_CHECK(esp_netif_str_to_ip4(CONFIG_ETHERNET_NETMASK, &ip_info.netmask));
+    ESP_ERROR_CHECK(esp_netif_str_to_ip4(CONFIG_ETHERNET_GATEWAY, &ip_info.gw));
+
+    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_netif, &ip_info));
+
+    /* Optional DNS */
+    esp_netif_dns_info_t dns = {0};
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    dns.ip.u_addr.ip4.addr = ESP_IP4TOADDR(10, 0, 0, 1);
+
+    ESP_ERROR_CHECK(esp_netif_set_dns_info(
+        s_netif,
+        ESP_NETIF_DNS_MAIN,
+        &dns));
+
+    /* Start Ethernet */
+    ESP_ERROR_CHECK(esp_eth_start(s_eth_handles[0]));
+
+    ESP_LOGI(TAG, "Ethernet started with static IP 10.0.0.1");
 }
