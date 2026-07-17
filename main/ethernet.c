@@ -158,6 +158,10 @@ static void eth_event_handler(void *arg,
 
     case ETHERNET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "Ethernet Link Down");
+       
+        spi_bus_free(CONFIG_ETHERNET_SPI_HOST);
+        hw_reset_w5500_only();
+        abort();    
         if (eth_timeout_timer) {
              xTimerReset(eth_timeout_timer, 0);
         }
