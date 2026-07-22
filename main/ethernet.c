@@ -1,282 +1,107 @@
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
 #include "esp_event.h"
 #include "esp_eth.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "ethernet_init.h"
 #include "ethernet.h"
-#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "sdkconfig.h"
 #include "esp_rom_sys.h"
 #include "esp_heap_caps.h"
-esp_netif_ip_info_t ip_info; 
+#include "lwip/inet.h"
 
 static const char *TAG = "ETH";
 
-#define W5500_RESET_GPIO   CONFIG_ETHERNET_SPI_PHY_RST0_GPIO
-#define ETH_TIMEOUT_MS     30000
-
-static TimerHandle_t eth_timeout_timer = NULL;
-
-// Globale Variablen, um die Treiber-Instanzen im laufenden Betrieb ansteuern zu können
-static esp_eth_handle_t *s_eth_handles = NULL;
-static uint8_t s_eth_port_cnt = 0;
-
-static bool s_restart_pending = false;
-
-static esp_netif_t *s_netif = NULL;
-
-
-/*---------------------------------------------------------------
- * Lokale Prototypen
- *-------------------------------------------------------------*/
-static void hw_reset_w5500_only(void);
-//static void eth_restart_without_reboot(void);
-
-
-/*---------------------------------------------------------------
- * Hardware Reset Logic (Physischer Reset des W5500)
- *-------------------------------------------------------------*/
-static void hw_reset_w5500_only(void)
+/* Event handler for IP_EVENT_ETH_GOT_IP */
+static void got_ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *data)
 {
-    gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = (1ULL << W5500_RESET_GPIO),
-        .pull_down_en = 0,
-        .pull_up_en = 0
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *) data;
+    const esp_netif_ip_info_t *ip_info = &event->ip_info;
+
+    ESP_LOGI(TAG, "Ethernet Got IP Address");
+    ESP_LOGI(TAG, "~~~~~~~~~~~");
+    ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&ip_info->ip));
+    ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
+    ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
+    ESP_LOGI(TAG, "~~~~~~~~~~~");
+}
+
+static void start_dhcp_server_after_connection(void *arg, esp_event_base_t base, int32_t id, void *event_data)
+{
+    esp_netif_t *eth_netif = esp_netif_next_unsafe(NULL);
+    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
+    while (eth_netif != NULL) {
+        esp_eth_handle_t eth_handle_for_current_netif = esp_netif_get_io_driver(eth_netif);
+        if (memcmp(&eth_handle, &eth_handle_for_current_netif, sizeof(esp_eth_handle_t)) == 0) {
+            esp_netif_dhcps_start(eth_netif);
+            ESP_LOGI(TAG, "DHCP server started on %s\n", esp_netif_get_desc(eth_netif));
+        }
+        eth_netif = esp_netif_next_unsafe(eth_netif);
+    }
+}
+
+void ethernet_init(void){
+    // Initialize Ethernet driver
+    uint8_t eth_port_cnt = 0;
+    esp_eth_handle_t *eth_handles;
+    ESP_ERROR_CHECK(ethernet_init_all(&eth_handles, &eth_port_cnt));
+    // Initialize TCP/IP network interface
+    ESP_ERROR_CHECK(esp_netif_init());
+
+    char if_key_str[10];
+    char if_desc_str[10];
+    esp_netif_config_t cfg;
+    esp_netif_inherent_config_t eth_netif_cfg;
+    ESP_LOGI(TAG, "Example will act as DHCP server");
+    esp_netif_ip_info_t *ip_infos;
+
+    ip_infos = calloc(eth_port_cnt, sizeof(esp_netif_ip_info_t));
+
+    eth_netif_cfg = (esp_netif_inherent_config_t) {
+        .get_ip_event = IP_EVENT_ETH_GOT_IP,
+        .lost_ip_event = 0,
+        .flags = ESP_NETIF_DHCP_SERVER,
+        .route_prio = 50
     };
-    gpio_config(&io_conf);
+    cfg = (esp_netif_config_t) {
+        .base = &eth_netif_cfg,
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
+    };
 
-    ESP_LOGI(TAG, "Pulling W5500 Reset LOW...");
-    gpio_set_level(W5500_RESET_GPIO, 0);
-    esp_rom_delay_us(10000); // 10ms im LOW-Zustand (W5500 benötigt laut Datenblatt min. 2µs)
+    for (uint8_t i = 0; i < eth_port_cnt; i++) {
+        sprintf(if_key_str, "ETH_S%d", i);
+        sprintf(if_desc_str, "eth%d", i);
 
-    ESP_LOGI(TAG, "Setting W5500 Reset HIGH...");
-    gpio_set_level(W5500_RESET_GPIO, 1);
-    
-    // Wir geben dem internen PLL des W5500 50ms Zeit zum Einschwingen,
-    // nutzen aber vTaskDelay statt esp_rom_delay, wenn wir nicht im ISR-Kontext sind.
-    vTaskDelay(pdMS_TO_TICKS(50)); 
-}
+        esp_netif_ip_info_t ip_info_i = {
+            .ip = {.addr = ipaddr_addr(CONFIG_ETHERNET_IP)},
+            .netmask = {.addr = ipaddr_addr(CONFIG_ETHERNET_NETMASK)},
+            .gw = {.addr = ipaddr_addr(CONFIG_ETHERNET_GATEWAY)}
+        };
+        ip_infos[i] = ip_info_i;
 
-static void eth_health_check(void)
-{
-    uint8_t mac[6];
-    esp_err_t err;
-
-    err = esp_eth_ioctl(s_eth_handles[0], ETH_CMD_G_MAC_ADDR, mac);
-
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG,
-                 "MAC OK: %02X:%02X:%02X:%02X:%02X:%02X",
-                 mac[0], mac[1], mac[2],
-                 mac[3], mac[4], mac[5]);
-    } else {
-        ESP_LOGE(TAG,
-                 "Cannot read MAC: %s",
-                 esp_err_to_name(err));
+        eth_netif_cfg.if_key = if_key_str;
+        eth_netif_cfg.if_desc = if_desc_str;
+        eth_netif_cfg.route_prio -= i * 5;
+        eth_netif_cfg.ip_info = &(ip_infos[i]);
+        esp_netif_t *eth_netif = esp_netif_new(&cfg);
+        
+        // Set DHCP lease time using public API options
+        uint32_t lease_opt = 7200; // Lease time in seconds
+ESP_ERROR_CHECK(esp_netif_dhcps_option(eth_netif, ESP_NETIF_OP_SET, ESP_NETIF_IP_ADDRESS_LEASE_TIME, &lease_opt, sizeof(lease_opt)));
+        // Attach Ethernet driver to TCP/IP stack
+        ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handles[i])));
     }
-
-    esp_netif_ip_info_t ip;
-
-    if (esp_netif_get_ip_info(s_netif, &ip) == ESP_OK) {
-        ESP_LOGI(TAG,
-                 "Current IP: " IPSTR,
-                 IP2STR(&ip.ip));
+    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ETHERNET_EVENT_CONNECTED, start_dhcp_server_after_connection, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, got_ip_event_handler, NULL));
+    ESP_LOGI(TAG, "--------");
+    // Start Ethernet driver state machine
+    for (uint8_t i = 0; i < eth_port_cnt; i++) {
+        ESP_ERROR_CHECK(esp_eth_start(eth_handles[i]));
+        ESP_LOGI(TAG, "Network Interface %d: " IPSTR, i, IP2STR(&ip_infos[i].ip));
     }
-
-    ESP_LOGI(TAG,
-         "Heap: %u  Min: %u",
-         esp_get_free_heap_size(),
-         esp_get_minimum_free_heap_size());
-}
-
-
-
-/*---------------------------------------------------------------
- * Timer Callback
- *-------------------------------------------------------------*/
-static void eth_timeout_callback(TimerHandle_t xTimer)
-{
-    ESP_LOGW(TAG, "Ethernet watchdog timeout.");
-    eth_health_check();
-    
-    if (s_restart_pending) {
-        return;
-    }
-
-    s_restart_pending = true;
-
-    for (int i = 0; i < s_eth_port_cnt; i++) {
-        if (s_eth_handles[i]) {
-            ESP_LOGI(TAG, "Stopping Ethernet port %d...", i);
-            esp_eth_stop(s_eth_handles[i]);
-        }
-    }
-}
-/*---------------------------------------------------------------
- * Ethernet IP Event
- *-------------------------------------------------------------*/
-static void eth_got_ip_handler(void *arg,
-                               esp_event_base_t event_base,
-                               int32_t event_id,
-                               void *event_data)
-{
-    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-
-    ESP_LOGI(TAG, "========== Ethernet ==========");
-    ESP_LOGI(TAG, "IP      : " IPSTR, IP2STR(&event->ip_info.ip));
-    ESP_LOGI(TAG, "Mask    : " IPSTR, IP2STR(&event->ip_info.netmask));
-    ESP_LOGI(TAG, "Gateway : " IPSTR, IP2STR(&event->ip_info.gw));
-
-    if (eth_timeout_timer != NULL) {
-        if (xTimerStop(eth_timeout_timer, 0) == pdPASS) {
-            ESP_LOGI(TAG, "Ethernet watchdog timer stopped.");
-        }
-    }
-}
-
-/*---------------------------------------------------------------
- * Ethernet Events
- *-------------------------------------------------------------*/
-static void eth_event_handler(void *arg,
-                              esp_event_base_t event_base,
-                              int32_t event_id,
-                              void *event_data)
-{
-    switch (event_id) {
-
-    case ETHERNET_EVENT_START:
-        ESP_LOGI(TAG, "Ethernet Started");
-        break;
-
-    case ETHERNET_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "Ethernet Link Up");
-        break;
-
-    case ETHERNET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "Ethernet Link Down");
-       
-        spi_bus_free(CONFIG_ETHERNET_SPI_HOST);
-        hw_reset_w5500_only();
-        abort();    
-        if (eth_timeout_timer) {
-             xTimerReset(eth_timeout_timer, 0);
-        }
-    break;
-
-    case ETHERNET_EVENT_STOP:
-
-    ESP_LOGW(TAG, "Ethernet Stopped");
-
-    if (eth_timeout_timer) {
-        xTimerStop(eth_timeout_timer, 0);
-    }
-
-    if (s_restart_pending) {
-
-        ESP_LOGW(TAG, "Resetting W5500...");
-
-        //hw_reset_w5500_only();
-
-        vTaskDelay(pdMS_TO_TICKS(100));
-
-        for (int i = 0; i < s_eth_port_cnt; i++) {
-
-            esp_err_t err = esp_eth_start(s_eth_handles[i]);
-
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "esp_eth_start failed: %s",
-                         esp_err_to_name(err));
-            }
-        }
-
-        s_restart_pending = false;
-    }
-    break;
-    }
-}
-
-/*---------------------------------------------------------------
- * Ethernet Initialization (Wird nur 1x beim Systemstart aufgerufen)
- *-------------------------------------------------------------*/
-void ethernet_init(void)
-{
-    esp_err_t ret;
-
-    eth_timeout_timer = xTimerCreate(
-        "eth_watchdog",
-        pdMS_TO_TICKS(ETH_TIMEOUT_MS),
-        pdFALSE,
-        NULL,
-        eth_timeout_callback);
-
-    if (eth_timeout_timer == NULL) {
-        ESP_LOGE(TAG, "Failed to create watchdog timer!");
-        return;
-    }
-
-    /* Initialize Ethernet hardware */
-    ret = ethernet_init_all(&s_eth_handles, &s_eth_port_cnt);
-    if ((ret != ESP_OK) || (s_eth_port_cnt == 0)) {
-        ESP_LOGE(TAG, "W5500 Hardware Init Failed: %s", esp_err_to_name(ret));
-        return;
-    }
-
-    /* Register event handlers */
-    ESP_ERROR_CHECK(esp_event_handler_register(
-        ETH_EVENT,
-        ESP_EVENT_ANY_ID,
-        eth_event_handler,
-        NULL));
-
-    ESP_ERROR_CHECK(esp_event_handler_register(
-        IP_EVENT,
-        IP_EVENT_ETH_GOT_IP,
-        eth_got_ip_handler,
-        NULL));
-
-    /* Create Ethernet netif */
-    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
-
-    s_netif = esp_netif_new(&cfg);
-    if (s_netif == NULL) {
-        ESP_LOGE(TAG, "Failed to create Ethernet netif");
-        return;
-    }
-
-    /* Attach Ethernet driver */
-    ESP_ERROR_CHECK(esp_netif_attach(
-        s_netif,
-        esp_eth_new_netif_glue(s_eth_handles[0])));
-
-    /* Stop DHCP client */
-    ESP_ERROR_CHECK(esp_netif_dhcpc_stop(s_netif));
-
-    
-
-    esp_netif_ip_info_t ip_info;
-
-    ESP_ERROR_CHECK(esp_netif_str_to_ip4(CONFIG_ETHERNET_IP, &ip_info.ip));
-    ESP_ERROR_CHECK(esp_netif_str_to_ip4(CONFIG_ETHERNET_NETMASK, &ip_info.netmask));
-    ESP_ERROR_CHECK(esp_netif_str_to_ip4(CONFIG_ETHERNET_GATEWAY, &ip_info.gw));
-
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(s_netif, &ip_info));
-
-    /* Optional DNS */
-    esp_netif_dns_info_t dns = {0};
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    dns.ip.u_addr.ip4.addr = ESP_IP4TOADDR(10, 0, 0, 1);
-
-    ESP_ERROR_CHECK(esp_netif_set_dns_info(
-        s_netif,
-        ESP_NETIF_DNS_MAIN,
-        &dns));
-
-    /* Start Ethernet */
-    ESP_ERROR_CHECK(esp_eth_start(s_eth_handles[0]));
-
-    ESP_LOGI(TAG, "Ethernet started with static IP 10.0.0.1");
+    ESP_LOGI(TAG, "--------");
 }
