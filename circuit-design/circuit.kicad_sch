@@ -4444,7 +4444,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Capacitor_THT:CP_Radial_D10.0mm_P2.50mm"
+		(property "Footprint" "Capacitor_THT:CP_Radial_D10.0mm_P3.50mm"
 			(at 155.9052 95.25 0)
 			(effects
 				(font
