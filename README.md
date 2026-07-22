@@ -126,7 +126,10 @@ I create a KiCad 9 project with some custom footprints for the following compone
 * Wiznet 5500 module with headers
 * generic USB-C Header which included termination resistors
 
-![alt text](circuit-design/circuit.png)
+![circuit](circuit-design/circuit.png)
+
+![circuit](circuit-design/myboard.png)
+
 
 ## License & contributors
 See the `LICENSE` file for license details. Contributions and issues are welcome.
