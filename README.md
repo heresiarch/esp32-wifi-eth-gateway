@@ -13,6 +13,8 @@ This project implements a network gateway that forwards traffic between the ESP3
 - Uses ESP‑IDF networking stack
 - Configurable via `menuconfig` / `sdkconfig`
 - Example application code in `main/` (`main.c`, `proxy.c`)
+- Wifi runs as DHCP client
+- Ethernet run as DHCP Server
 
 ## Repository layout
 - `main/` — application source and component Kconfig
@@ -122,7 +124,7 @@ I create a KiCad 9 project with some custom footprints for the following compone
 * Waveshare ESP32-C6-Zero with headers
 * TPS2553 USB eFuse on DIP-6 Adapter (Powerlimit 400mA)
 * Wiznet 5500 module with headers
-* generic USB-C Header which included already termination resistors
+* generic USB-C Header which included termination resistors
 
 ![alt text](circuit-design/circuit.png)
 
