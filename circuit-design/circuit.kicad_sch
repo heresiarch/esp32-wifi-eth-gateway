@@ -1836,12 +1836,6 @@
 		(uuid "9e128dff-f91d-4654-bb89-d68d36fff331")
 	)
 	(junction
-		(at 110.49 101.6)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "a5747add-1ed8-470b-b9ee-cc796dd7e318")
-	)
-	(junction
 		(at 161.29 78.74)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -1858,12 +1852,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "bca028a2-93bc-4bc2-ad08-eaec8fff3a4b")
-	)
-	(junction
-		(at 110.49 78.74)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "c376a6e5-4b43-4ac5-a2a8-8b48fa697bfa")
 	)
 	(junction
 		(at 123.19 101.6)
@@ -2039,16 +2027,6 @@
 	)
 	(wire
 		(pts
-			(xy 110.49 87.63) (xy 110.49 78.74)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1fae0807-a0b5-4401-a666-bda25dca8962")
-	)
-	(wire
-		(pts
 			(xy 130.81 83.82) (xy 127 83.82)
 		)
 		(stroke
@@ -2059,16 +2037,6 @@
 	)
 	(wire
 		(pts
-			(xy 92.71 78.74) (xy 110.49 78.74)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "21c55170-2c75-49cd-8525-35f37b2ed508")
-	)
-	(wire
-		(pts
 			(xy 96.52 101.6) (xy 104.14 101.6)
 		)
 		(stroke
@@ -2076,16 +2044,6 @@
 			(type default)
 		)
 		(uuid "235b2fbc-4b8b-4370-b5f9-c38165c810eb")
-	)
-	(wire
-		(pts
-			(xy 110.49 101.6) (xy 116.84 101.6)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "244edc55-333a-4fff-b50d-1966545ec5d4")
 	)
 	(wire
 		(pts
@@ -2249,7 +2207,7 @@
 	)
 	(wire
 		(pts
-			(xy 110.49 78.74) (xy 116.84 78.74)
+			(xy 92.71 78.74) (xy 116.84 78.74)
 		)
 		(stroke
 			(width 0)
@@ -2366,16 +2324,6 @@
 			(type default)
 		)
 		(uuid "8965e9f1-a641-49e0-8f98-6981a7d184c6")
-	)
-	(wire
-		(pts
-			(xy 110.49 95.25) (xy 110.49 101.6)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "8f7a32d7-7950-4657-9b0e-da59191f4858")
 	)
 	(wire
 		(pts
@@ -2559,7 +2507,7 @@
 	)
 	(wire
 		(pts
-			(xy 106.68 101.6) (xy 110.49 101.6)
+			(xy 106.68 101.6) (xy 116.84 101.6)
 		)
 		(stroke
 			(width 0)
@@ -4265,75 +4213,6 @@
 					(size 1.27 1.27)
 				)
 				(hide yes)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:C_Polarized")
-		(at 110.49 91.44 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(uuid "2066e6bd-5c31-48fa-a6bb-4a4b27b3bfaa")
-		(property "Reference" "C1"
-			(at 111.506 88.646 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "1000uF/10V"
-			(at 114.554 93.472 0)
-			(do_not_autoplace yes)
-			(effects
-				(font
-					(size 0.762 0.762)
-				)
-			)
-		)
-		(property "Footprint" "Capacitor_THT:CP_Radial_D10.0mm_P3.50mm"
-			(at 111.4552 95.25 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" "~"
-			(at 110.49 91.44 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Polarized capacitor"
-			(at 110.49 91.44 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "2"
-			(uuid "0e7770d0-bcca-4f93-9942-a9c847919364")
-		)
-		(pin "1"
-			(uuid "04771d95-8eec-4fea-85b9-f9f0c68935fc")
-		)
-		(instances
-			(project "circuit"
-				(path "/1be85aaa-1e50-4987-bb2c-2e9632ac7113"
-					(reference "C1")
-					(unit 1)
-				)
 			)
 		)
 	)
