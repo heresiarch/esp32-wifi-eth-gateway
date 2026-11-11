@@ -136,22 +136,27 @@ Architecture diagram:
 
 ```mermaid
 flowchart TD
-    WIFI([Wi-Fi network]) <-->|802.11| ESP
+    WIFI(["Wi-Fi network"])
+    DEV(["Local devices"])
+    W5500["W5500 Ethernet controller"]
 
-    subgraph ESP[ESP32-C6]
-        direction TB
-        W[esp_wifi STA<br/>DHCP client] <--> P
-        E[esp_eth SPI driver] <--> P
-        DHCPS[DHCP server] --- E
-        subgraph P[proxy.c]
-            P1[port 8888<br/>task + buffer]
-            P2[port 502<br/>task + buffer]
-        end
-        LED[status_led.c]
+    subgraph ESP["ESP32-C6"]
+        STA["esp_wifi STA<br/>DHCP client"]
+        P1["proxy.c: port 8888<br/>task + buffer"]
+        P2["proxy.c: port 502<br/>task + buffer, optional"]
+        ETH["esp_eth SPI driver"]
+        DHCPS["DHCP server"]
+        LED["status_led.c"]
     end
 
-    E <-->|SPI| W5500[W5500 Ethernet]
-    W5500 <-->|Ethernet| DEV([Local devices])
+    WIFI <--> STA
+    STA <--> P1
+    STA <--> P2
+    P1 <--> ETH
+    P2 <--> ETH
+    DHCPS --- ETH
+    ETH <-->|SPI| W5500
+    W5500 <--> DEV
 ```
 
 Note: If you change these pins via `menuconfig`, update `sdkconfig` and re-flash the firmware so the driver uses the new assignments.
