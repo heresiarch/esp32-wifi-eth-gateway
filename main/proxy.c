@@ -1,5 +1,6 @@
 #include "proxy.h"
 #include <string.h>
+#include <stdio.h>
 #include <fcntl.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,6 +17,11 @@ static const char *TAG = "PROXY";
 #define PROXY_PRIORITY   5
 #define BUFFER_SIZE      1460
 #define SEND_TIMEOUT_MS  5000 // Wait at most 5 seconds for a blocking write buffer
+
+// Per-instance logging: every message carries the owning listen port
+#define PLOGI(port, fmt, ...) ESP_LOGI(TAG, "[port %u] " fmt, (unsigned)(port), ##__VA_ARGS__)
+#define PLOGW(port, fmt, ...) ESP_LOGW(TAG, "[port %u] " fmt, (unsigned)(port), ##__VA_ARGS__)
+#define PLOGE(port, fmt, ...) ESP_LOGE(TAG, "[port %u] " fmt, (unsigned)(port), ##__VA_ARGS__)
 
 typedef struct
 {
@@ -51,7 +57,7 @@ static void configure_socket_safety(int fd) {
 }
 
 // Sends data without blocking, with a built-in timeout guard against stalls
-static int send_all(int fd, const uint8_t *buf, int len) {
+static int send_all(uint16_t listen_port, int fd, const uint8_t *buf, int len) {
     int total_sent = 0;
     int attempts = 0;
     const int max_attempts = SEND_TIMEOUT_MS / 10; // e.g. 500 attempts of 10 ms
@@ -61,7 +67,7 @@ static int send_all(int fd, const uint8_t *buf, int len) {
         if (sent <= 0) {
             if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                 if (++attempts > max_attempts) {
-                    ESP_LOGW(TAG, "Write timeout reached on socket %d.", fd);
+                    PLOGW(listen_port, "Write timeout reached on socket %d.", fd);
                     return -1; // Abort on timeout
                 }
                 vTaskDelay(pdMS_TO_TICKS(10)); 
@@ -83,7 +89,7 @@ static void proxy_task(void *arg)
     proxy_config_t *cfg = (proxy_config_t *)arg;
     uint8_t *buffer = malloc(BUFFER_SIZE);
     if (!buffer) {
-        ESP_LOGE(TAG, "Critical: failed to allocate network buffer!");
+        PLOGE(cfg->listen_port, "startup failed: allocation (buffer)");
         goto exit;
     }
 
@@ -94,7 +100,7 @@ static void proxy_task(void *arg)
 
     int listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_sock < 0) {
-        ESP_LOGE(TAG, "socket() failed");
+        PLOGE(cfg->listen_port, "startup failed: allocation (socket)");
         goto free_buffer;
     }
 
@@ -102,16 +108,16 @@ static void proxy_task(void *arg)
     setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     if (bind(listen_sock, (struct sockaddr *)&listen_addr, sizeof(listen_addr)) != 0) {
-        ESP_LOGE(TAG, "bind() failed");
+        PLOGE(cfg->listen_port, "startup failed: bind (errno %d)", errno);
         goto cleanup_listener;
     }
 
     if (listen(listen_sock, 1) != 0) {
-        ESP_LOGE(TAG, "listen() failed");
+        PLOGE(cfg->listen_port, "startup failed: listen (errno %d)", errno);
         goto cleanup_listener;
     }
 
-    ESP_LOGI(TAG, "Proxy listening on port %u", cfg->listen_port);
+    PLOGI(cfg->listen_port, "Proxy listening");
 
     while (true) {
         struct sockaddr_in client_addr;
@@ -123,7 +129,7 @@ static void proxy_task(void *arg)
             continue;
         }
 
-        ESP_LOGI(TAG, "Client connected!");
+        PLOGI(cfg->listen_port, "Client connected!");
         led_set_max_brightness(100);
         led_set_blink_color(0, 255, 255); 
 
@@ -132,14 +138,14 @@ static void proxy_task(void *arg)
         remote_addr.sin_port = htons(cfg->remote_port);
         
         if (inet_pton(AF_INET, cfg->remote_ip, &remote_addr.sin_addr) != 1) {
-            ESP_LOGE(TAG, "Invalid IP address: %s", cfg->remote_ip);
+            PLOGE(cfg->listen_port, "Invalid IP address: %s", cfg->remote_ip);
             close(client);
             continue;
         }
 
         int server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (server < 0) {
-            ESP_LOGE(TAG, "Could not create server socket");
+            PLOGE(cfg->listen_port, "Could not create server socket");
             close(client); 
             continue;
         }
@@ -148,7 +154,7 @@ static void proxy_task(void *arg)
         setsockopt(server, SOL_SOCKET, SO_SNDTIMEO, &conn_timeout, sizeof(conn_timeout));
 
         if (connect(server, (struct sockaddr *)&remote_addr, sizeof(remote_addr)) != 0) {
-            ESP_LOGE(TAG, "Could not connect to %s:%u", cfg->remote_ip, cfg->remote_port);
+            PLOGE(cfg->listen_port, "Could not connect to %s:%u", cfg->remote_ip, cfg->remote_port);
             close(client); 
             close(server); 
             continue;
@@ -157,7 +163,7 @@ static void proxy_task(void *arg)
         configure_socket_safety(client);
         configure_socket_safety(server);
 
-        ESP_LOGI(TAG, "Connection to target server established.");
+        PLOGI(cfg->listen_port, "Connection to target server established.");
 
         while (true) {
             fd_set readfds;
@@ -170,11 +176,11 @@ static void proxy_task(void *arg)
             int ret = select(maxfd + 1, &readfds, NULL, NULL, &timeout);
 
             if (ret < 0) {
-                ESP_LOGE(TAG, "select() error, closing sockets.");
+                PLOGE(cfg->listen_port, "select() error, closing sockets.");
                 break; 
             }
             if (ret == 0) {
-                ESP_LOGW(TAG, "Inactivity timeout (30s) reached. Closing connection.");
+                PLOGW(cfg->listen_port, "Inactivity timeout (30s) reached. Closing connection.");
                 break; 
             }
 
@@ -186,7 +192,7 @@ static void proxy_task(void *arg)
                     }
                     break; 
                 }
-                if (send_all(server, buffer, len) < 0) {
+                if (send_all(cfg->listen_port, server, buffer, len) < 0) {
                     break;
                 }
             }
@@ -199,13 +205,13 @@ static void proxy_task(void *arg)
                     }
                     break; 
                 }
-                if (send_all(client, buffer, len) < 0) {
+                if (send_all(cfg->listen_port, client, buffer, len) < 0) {
                     break;
                 }
             }
         }
 
-        ESP_LOGI(TAG, "Connection closed. Cleaning up sockets...");
+        PLOGI(cfg->listen_port, "Connection closed. Cleaning up sockets...");
         led_set_max_brightness(100);
         led_set_blink_color(255, 0, 0); 
 
@@ -233,7 +239,7 @@ void proxy_start(uint16_t listen_port, const char *remote_ip, uint16_t remote_po
 {
     proxy_config_t *cfg = (proxy_config_t *)malloc(sizeof(proxy_config_t));
     if (!cfg) {
-        ESP_LOGE(TAG, "Could not allocate configuration structure!");
+        PLOGE(listen_port, "startup failed: allocation (config)");
         return;
     }
 
@@ -243,9 +249,13 @@ void proxy_start(uint16_t listen_port, const char *remote_ip, uint16_t remote_po
     strncpy(cfg->remote_ip, remote_ip, sizeof(cfg->remote_ip) - 1);
     cfg->remote_ip[sizeof(cfg->remote_ip) - 1] = '\0';
 
+    // xTaskCreate copies the name, so a stack buffer is safe
+    char name[16];
+    snprintf(name, sizeof(name), "proxy_%u", (unsigned)listen_port);
+
     BaseType_t result = xTaskCreate(
         proxy_task,
-        "proxy",
+        name,
         PROXY_STACK_SIZE,
         cfg,
         PROXY_PRIORITY,
@@ -253,7 +263,7 @@ void proxy_start(uint16_t listen_port, const char *remote_ip, uint16_t remote_po
 
     // Fixes a memory leak if the task fails to start
     if (result != pdPASS) {
-        ESP_LOGE(TAG, "Task creation failed!");
+        PLOGE(listen_port, "startup failed: allocation (task)");
         free(cfg);
     }
 }

@@ -15,6 +15,7 @@ This project implements a network gateway that forwards traffic between the ESP3
 - Example application code in `main/` (`main.c`, `proxy.c`)
 - Wifi runs as DHCP client
 - Ethernet run as DHCP Server
+- Two independent TCP proxy ports (default 8888 and 502 for Modbus TCP), each with its own target
 
 ## Repository layout
 - `main/` — application source and component Kconfig
@@ -41,7 +42,7 @@ This project implements a network gateway that forwards traffic between the ESP3
 idf.py set-target esp32c6
 ```
 
-3. Configure project options (wifi credentials, ethernet pins, etc.):
+3. Create `main/Kconfig.projbuild` from the template (see "Create your own configuration") and configure project options (wifi credentials, ethernet pins, etc.):
 
 ```bash
 idf.py menuconfig
@@ -56,64 +57,101 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 Replace `/dev/ttyUSB0` with your serial device.
 
+## Create your own configuration
+The project settings (Wi-Fi credentials, Ethernet addressing, proxy ports and targets) are defined in `main/Kconfig.projbuild`. That file is listed in `.gitignore`, so your credentials stay out of the repository. The repository only contains the template `main/Kconfig.projbuild.example`. Before the first build, create your own file from it:
+
+1. Copy the template:
+
+```bash
+cp main/Kconfig.projbuild.example main/Kconfig.projbuild
+```
+
+2. (Optional) edit the `default` values in `main/Kconfig.projbuild`, for example `WIFI_SSID`, `WIFI_PASSWORD`, `ETHERNET_IP` and the proxy targets. You can also leave the defaults and set everything in step 3.
+
+3. Open menuconfig and check or change the values under "Project Network Configuration":
+
+```bash
+idf.py menuconfig
+```
+
+   - "Wi-Fi Settings": `WIFI_SSID`, `WIFI_PASSWORD`
+   - "Ethernet & Proxy Settings": Ethernet IP, netmask and gateway, the first proxy, and the optional second proxy (`SECOND_PROXY_ENABLE`)
+
+4. Build and flash as described in "Quick build & flash".
+
+Notes:
+- Without `main/Kconfig.projbuild` the `CONFIG_*` options used by `main.c` are missing and the build fails.
+- Values you set in menuconfig are stored in `sdkconfig`, which takes priority over the `default` values in `Kconfig.projbuild`. If you change a `default` later and the old value is still used, change it in menuconfig, or delete `sdkconfig` and run `idf.py reconfigure`. Note that deleting `sdkconfig` resets all of your settings.
+- If you add or rename options in `main/Kconfig.projbuild`, run `idf.py reconfigure` so `sdkconfig` picks them up.
+- When the template changes in the repository (new options), compare it with your copy, for example with `diff main/Kconfig.projbuild.example main/Kconfig.projbuild`, and add the new options to your file.
+- Do not commit `main/Kconfig.projbuild` or `sdkconfig` if they contain real passwords.
+
 ## Configuration notes
 - Wi‑Fi credentials and runtime options can be set in `menuconfig` or stored in `sdkconfig`/`sdkconfig.defaults` depending on how the project exposes them.
 - Hardware pin mappings for the SPI Ethernet module are configured in `menuconfig` or in the ethernet component source — check `managed_components/espressif__w5500/` for driver-specific settings.
 
+## Proxy configuration
+The firmware runs two independent TCP proxy instances. Each one listens on its own port and forwards traffic to its own target. Both are set in `idf.py menuconfig` under "Ethernet & Proxy Settings":
+
+| Option | Default | Purpose |
+|---|---|---|
+| `SERVER_LISTEN_PORT` | 8888 | Listen port of the first proxy |
+| `PROXY_TARGET_ADDRESS` | 10.0.0.2 | Target IP or host of the first proxy |
+| `PROXY_TARGET_PORT` | 8888 | Target port of the first proxy |
+| `SECOND_PROXY_ENABLE` | y | Switch that enables the second proxy |
+| `SECOND_SERVER_LISTEN_PORT` | 502 | Listen port of the second proxy (Modbus TCP) |
+| `SECOND_PROXY_TARGET_ADDRESS` | 10.0.0.2 | Target IP or host of the second proxy |
+| `SECOND_PROXY_TARGET_PORT` | 502 | Target port of the second proxy |
+
+Notes:
+- The second proxy is optional. `SECOND_PROXY_ENABLE` defaults to `y`. The three options `SECOND_SERVER_LISTEN_PORT` (502), `SECOND_PROXY_TARGET_ADDRESS` (10.0.0.2) and `SECOND_PROXY_TARGET_PORT` (502) are visible in `menuconfig` only when the switch is set. When it is unset, only the first proxy is started and the second-port checks are skipped.
+- Ports must be in the range 1 to 65535.
+- The two listen ports must differ. The build fails with a compile-time error if they are equal or out of range.
+- Each proxy serves one client at a time. The two proxies run in parallel and do not affect each other.
+- Log lines are prefixed with `[port N]` so you can tell the two proxies apart.
+- `main/Kconfig.projbuild.example` is a template with placeholder values. See "Create your own configuration" for how to copy it to `main/Kconfig.projbuild`.
+
 ## Wiring (ESP32 → W5500)
 Below are the SPI pin assignments used in this project.
 
-- SCLK: GPIO4  (`CONFIG_ETHERNET_SPI_SCLK_GPIO=4`)
-- MOSI: GPIO5  (`CONFIG_ETHERNET_SPI_MOSI_GPIO=5`)
-- MISO: GPIO2  (`CONFIG_ETHERNET_SPI_MISO_GPIO=2`)
-- CS (CS0): GPIO3  (`CONFIG_ETHERNET_SPI_CS0_GPIO=3`)
-- INT: GPIO15  (`CONFIG_ETHERNET_SPI_INT0_GPIO=15`)
-- PHY_RST: GPIO14  (`CONFIG_ETHERNET_SPI_PHY_RST0_GPIO=14`)
-
-ASCII wiring diagram (ESP32 pins -> W5500 pins):
-
-```
-ESP32 GPIO4  (SCLK)  ------>  W5500 SCLK
-ESP32 GPIO5  (MOSI)  ------>  W5500 MOSI
-ESP32 GPIO2  (MISO)  ------>  W5500 MISO
-ESP32 GPIO3  (CS)    ------>  W5500 SCS/CS
-ESP32 GPIO15 (INT)   ------>  W5500 INT
-ESP32 GPIO14 (RST)   ------>  W5500 RESET
-```
+| Signal | ESP32-C6 pin | W5500 pin | Direction | Kconfig option |
+|---|---|---|---|---|
+| SCLK | GPIO4 | SCLK | ESP32 → W5500 | `CONFIG_ETHERNET_SPI_SCLK_GPIO=4` |
+| MOSI | GPIO5 | MOSI | ESP32 → W5500 | `CONFIG_ETHERNET_SPI_MOSI_GPIO=5` |
+| MISO | GPIO2 | MISO | W5500 → ESP32 | `CONFIG_ETHERNET_SPI_MISO_GPIO=2` |
+| CS (CS0) | GPIO3 | SCS | ESP32 → W5500 | `CONFIG_ETHERNET_SPI_CS0_GPIO=3` |
+| INT | GPIO15 | INT | W5500 → ESP32 | `CONFIG_ETHERNET_SPI_INT0_GPIO=15` |
+| PHY_RST | GPIO14 | RESET | ESP32 → W5500 | `CONFIG_ETHERNET_SPI_PHY_RST0_GPIO=14` |
 
 **Architecture**
 
 - **Overview:** The ESP32 runs a small application that bridges packets between the Wi‑Fi stack (`esp_wifi` / `lwIP`) and a SPI Ethernet controller (W5500). The user-space TCP proxy (`proxy.c`) accepts connections on the ESP32 and forwards bytes between the two interfaces.
 
 - **Responsibilities:**
-	- `main.c` — initialises Wi‑Fi, Ethernet and starts the proxy.
-	- `proxy.c` — accepts TCP connections and forwards traffic between endpoints.
+	- `main.c` — initialises Wi‑Fi, Ethernet and starts the two proxy instances.
+	- `proxy.c` — accepts TCP connections and forwards traffic between endpoints. `proxy_start()` is called once per port.
 	- `status_led.c` — indicates general on status and traffic activity (Ethernet/Wi‑Fi).
 
-ASCII architecture diagram:
+Architecture diagram:
 
-```
-										+----------------------+
-										|    Wi‑Fi Network     |
-										+----------+-----------+
-															 |
-												 (802.11 / IP)
-															 |
-										+----------v-----------+
-										|      ESP32‑C6        |
-										|  - esp_wifi (STA)    |
-										|  - esp_eth (W5500)   |
-										|  - proxy.c (TCP fwd) |
-										|  - status_led (LED)  |
-										+----+-----------+------+
-												 |           |
-							SPI (MOSI/SCLK/CS)     |  Local IP sockets
-												 |           |
-										+----v----+      |
-										|  W5500   |      |
-										| Ethernet |<-----+
-										|  PHY     |  (Ethernet network / device)
-										+---------+
+```mermaid
+flowchart TD
+    WIFI([Wi-Fi network]) <-->|802.11| ESP
+
+    subgraph ESP[ESP32-C6]
+        direction TB
+        W[esp_wifi STA<br/>DHCP client] <--> P
+        E[esp_eth SPI driver] <--> P
+        DHCPS[DHCP server] --- E
+        subgraph P[proxy.c]
+            P1[port 8888<br/>task + buffer]
+            P2[port 502<br/>task + buffer]
+        end
+        LED[status_led.c]
+    end
+
+    E <-->|SPI| W5500[W5500 Ethernet]
+    W5500 <-->|Ethernet| DEV([Local devices])
 ```
 
 Note: If you change these pins via `menuconfig`, update `sdkconfig` and re-flash the firmware so the driver uses the new assignments.

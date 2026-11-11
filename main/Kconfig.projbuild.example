@@ -52,6 +52,35 @@ menu "Project Network Configuration"
             range 1 65535
             help
                 The port number of the remote proxy target server.
+
+        config SECOND_PROXY_ENABLE
+            bool "Enable Second Proxy"
+            default y
+            help
+                Enable a second, independent proxy instance with its own listen port and target. When disabled, only the first proxy runs and the second proxy settings are hidden.
+
+        config SECOND_SERVER_LISTEN_PORT
+            int "Second Server Listen Port"
+            depends on SECOND_PROXY_ENABLE
+            default 502
+            range 1 65535
+            help
+                The local port number (1-65535) on which the second proxy instance listens for incoming connections. Default 502 is the Modbus TCP port. Must differ from the Server Listen Port.
+
+        config SECOND_PROXY_TARGET_ADDRESS
+            string "Second Proxy Target Address"
+            depends on SECOND_PROXY_ENABLE
+            default "192.168.4.2"
+            help
+                The IP address or domain name of the remote target server for the second proxy instance.
+
+        config SECOND_PROXY_TARGET_PORT
+            int "Second Proxy Target Port"
+            depends on SECOND_PROXY_ENABLE
+            default 502
+            range 1 65535
+            help
+                The port number (1-65535) of the remote target server for the second proxy instance.
     endmenu
 
 endmenu

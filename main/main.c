@@ -29,6 +29,21 @@
 static const char *TAG = "MAIN";
 
 /*---------------------------------------------------------------
+ * Compile-time proxy port checks
+ *-------------------------------------------------------------*/
+
+#define PORT_IN_RANGE(p) ((p) >= 1 && (p) <= 65535)
+
+_Static_assert(PORT_IN_RANGE(CONFIG_SERVER_LISTEN_PORT),
+               "CONFIG_SERVER_LISTEN_PORT must be in the range 1..65535");
+#if CONFIG_SECOND_PROXY_ENABLE
+_Static_assert(PORT_IN_RANGE(CONFIG_SECOND_SERVER_LISTEN_PORT),
+               "CONFIG_SECOND_SERVER_LISTEN_PORT must be in the range 1..65535");
+_Static_assert(CONFIG_SECOND_SERVER_LISTEN_PORT != CONFIG_SERVER_LISTEN_PORT,
+               "CONFIG_SERVER_LISTEN_PORT and CONFIG_SECOND_SERVER_LISTEN_PORT must differ");
+#endif
+
+/*---------------------------------------------------------------
  * Main
  *-------------------------------------------------------------*/
 
@@ -47,8 +62,10 @@ void app_main(void)
 
     ESP_LOGI(TAG, "WiFi + Ethernet started.");
     
-    // TODO: Make these configurable via menuconfig
     proxy_start(CONFIG_SERVER_LISTEN_PORT, CONFIG_PROXY_TARGET_ADDRESS, CONFIG_PROXY_TARGET_PORT);
+#if CONFIG_SECOND_PROXY_ENABLE
+    proxy_start(CONFIG_SECOND_SERVER_LISTEN_PORT, CONFIG_SECOND_PROXY_TARGET_ADDRESS, CONFIG_SECOND_PROXY_TARGET_PORT);
+#endif
 
 
     // Initialize non-blocking 30 ms timer on GPIO 21
