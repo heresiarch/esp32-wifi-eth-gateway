@@ -15,7 +15,7 @@ This project implements a network gateway that forwards traffic between the ESP3
 - Example application code in `main/` (`main.c`, `proxy.c`)
 - Wifi runs as DHCP client
 - Ethernet run as DHCP Server
-- Two independent TCP proxy ports (default 8888 and 502 for Modbus TCP), each with its own target
+- TCP proxy on port 8888, plus an optional second independent proxy (default port 502 for Modbus TCP) that can be switched on or off with `SECOND_PROXY_ENABLE`, each with its own target
 
 ## Repository layout
 - `main/` — application source and component Kconfig
@@ -106,7 +106,7 @@ The firmware runs two independent TCP proxy instances. Each one listens on its o
 Notes:
 - The second proxy is optional. `SECOND_PROXY_ENABLE` defaults to `y`. The three options `SECOND_SERVER_LISTEN_PORT` (502), `SECOND_PROXY_TARGET_ADDRESS` (10.0.0.2) and `SECOND_PROXY_TARGET_PORT` (502) are visible in `menuconfig` only when the switch is set. When it is unset, only the first proxy is started and the second-port checks are skipped.
 - Ports must be in the range 1 to 65535.
-- The two listen ports must differ. The build fails with a compile-time error if they are equal or out of range.
+- The two listen ports must differ. With `SECOND_PROXY_ENABLE` set, the build fails with a compile-time error if they are equal or out of range. With it unset, only the first port is checked.
 - Each proxy serves one client at a time. The two proxies run in parallel and do not affect each other.
 - Log lines are prefixed with `[port N]` so you can tell the two proxies apart.
 - `main/Kconfig.projbuild.example` is a template with placeholder values. See "Create your own configuration" for how to copy it to `main/Kconfig.projbuild`.
@@ -128,8 +128,8 @@ Below are the SPI pin assignments used in this project.
 - **Overview:** The ESP32 runs a small application that bridges packets between the Wi‑Fi stack (`esp_wifi` / `lwIP`) and a SPI Ethernet controller (W5500). The user-space TCP proxy (`proxy.c`) accepts connections on the ESP32 and forwards bytes between the two interfaces.
 
 - **Responsibilities:**
-	- `main.c` — initialises Wi‑Fi, Ethernet and starts the two proxy instances.
-	- `proxy.c` — accepts TCP connections and forwards traffic between endpoints. `proxy_start()` is called once per port.
+	- `main.c` — initialises Wi‑Fi, Ethernet and starts the first proxy instance and, if `SECOND_PROXY_ENABLE` is set, the second one.
+	- `proxy.c` — accepts TCP connections and forwards traffic between endpoints. `proxy_start()` is called once per enabled port.
 	- `status_led.c` — indicates general on status and traffic activity (Ethernet/Wi‑Fi).
 
 Architecture diagram:
